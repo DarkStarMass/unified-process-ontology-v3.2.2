@@ -1,2 +1,11 @@
-# unified-process-ontology-v3.2.2
-Unified Process Ontology v3.2.2 - cognitive architecture with parasympathetic swarm damping, hostile referees and sensory triage. Includes code, visualizations and Fachthesen-Papier.
+# Unified Process Ontology v3.2.2
+
+Private repository for the Unified Process Ontology prototype.
+
+## Structure
+- `src/` – core implementation and visualization scripts
+- `data/` – simulation outputs (CSV)
+
+Contains the parasympathetic swarm with continuous damping, hostile referees, sensory triage and L2 collapse.
+
+Generated and uploaded via Grok.
