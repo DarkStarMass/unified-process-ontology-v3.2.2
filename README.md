@@ -1,11 +1,12 @@
-# Unified Process Ontology v3.2.2
+# Unified Process Ontology
 
-Private repository for the Unified Process Ontology prototype.
+## v3.2.6 (aktuell)
+- Deterministischer Action-Space
+- Distanz-Logging vor und nach Collapse
+- Dynamic Stress Regulator
+- Tkinter-GUI und interaktives HTML-Interface
 
-## Structure
-- `src/` – core implementation and visualization scripts
-- `data/` – simulation outputs (CSV)
+Dateien unter `src/v3_2_6/`.
 
-Contains the parasympathetic swarm with continuous damping, hostile referees, sensory triage and L2 collapse.
-
-Generated and uploaded via Grok.
+## v3.2.2
+Ursprüngliche Version unter `src/`.
