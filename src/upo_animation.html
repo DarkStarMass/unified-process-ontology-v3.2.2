@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>UPO v3.2.2 – Live Animation</title>
+<style>
+  body { margin:0; background:#0d1117; color:#e6edf3; font-family: system-ui, sans-serif; }
+  header { padding:16px 24px; background:#161b22; border-bottom:1px solid #30363d; }
+  h1 { margin:0; font-size:1.4rem; }
+  .sub { color:#8b949e; font-size:0.9rem; }
+  #controls { padding:12px 24px; }
+  button { background:#238636; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:1rem; }
+  button:hover { background:#2ea043; }
+  #stage { display:flex; gap:20px; padding:20px; flex-wrap:wrap; }
+  .panel { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px; min-width:280px; }
+  .panel h3 { margin:0 0 10px 0; font-size:0.95rem; color:#58a6ff; }
+  canvas { background:#0d1117; border-radius:6px; display:block; }
+  .entropy-bar { height:24px; background:#21262d; border-radius:4px; overflow:hidden; position:relative; }
+  .entropy-fill { height:100%; width:0%; background:linear-gradient(90deg,#f85149,#ffa657); transition:width 0.15s; }
+  .entropy-fill.cool { background:linear-gradient(90deg,#58a6ff,#79c0ff); }
+  .agent { display:inline-block; width:28px; height:28px; margin:2px; border-radius:4px; background:#30363d; position:relative; }
+  .agent.active { background:#58a6ff; }
+  .agent.damped { box-shadow:0 0 8px #58a6ff; }
+  .conf { height:8px; background:#21262d; border-radius:2px; margin-top:2px; }
+  .conf-fill { height:100%; background:#3fb950; }
+  .status { margin-top:8px; font-size:0.85rem; color:#8b949e; min-height:2.4em; }
+  .winner { border:2px solid #3fb950 !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Unified Process Ontology v3.2.2</h1>
+  <div class="sub">Parasympathetic Swarm · Entropy Damping · Hostile Referees · Collapse</div>
+</header>
+<div id="controls">
+  <button onclick="startAnim()">Animation starten</button>
+  <span id="stepLabel" style="margin-left:16px;color:#8b949e;">Bereit</span>
+</div>
+<div id="stage">
+  <div class="panel">
+    <h3>Entropy (Blaue Aura)</h3>
+    <div class="entropy-bar"><div id="entropyFill" class="entropy-fill"></div></div>
+    <div class="status" id="entropyStatus">Threshold 0.85</div>
+  </div>
+  <div class="panel">
+    <h3>Swarm Agents</h3>
+    <div id="agents"></div>
+    <div class="status" id="agentStatus">Warte auf Start</div>
+  </div>
+  <div class="panel">
+    <h3>Confidence nach Critique</h3>
+    <canvas id="confCanvas" width="260" height="140"></canvas>
+    <div class="status" id="confStatus">—</div>
+  </div>
+</div>
+<script>
+const N = 20;
+const THRESH = 0.85;
+let agents = [];
+let entropyHist = [];
+let running = false;
+
+function reset() {
+  document.getElementById("agents").innerHTML = "";
+  agents = [];
+  entropyHist = [];
+  for (let i = 0; i < N; i++) {
+    const el = document.createElement("div");
+    el.className = "agent";
+    el.id = "a" + i;
+    const bar = document.createElement("div");
+    bar.className = "conf";
+    const fill = document.createElement("div");
+    fill.className = "conf-fill";
+    fill.style.width = "0%";
+    bar.appendChild(fill);
+    el.appendChild(bar);
+    document.getElementById("agents").appendChild(el);
+    agents.push({ el, fill, conf: 1, damped: false });
+  }
+  document.getElementById("entropyFill").style.width = "0%";
+  document.getElementById("entropyFill").classList.remove("cool");
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function startAnim() {
+  if (running) return;
+  running = true;
+  reset();
+  document.getElementById("stepLabel").textContent = "Läuft…";
+
+  let entropy = 0.5;
+  const base = [0.8, 0.3, -0.4];
+  const ground = [1,1,1];
+
+  for (let i = 0; i < N; i++) {
+    let damped = false;
+    if (entropy >= THRESH) {
+      entropy *= 0.8;
+      damped = true;
+      document.getElementById("entropyFill").classList.add("cool");
+    } else {
+      document.getElementById("entropyFill").classList.remove("cool");
+    }
+    entropyHist.push(entropy);
+
+    // visual
+    const pct = Math.min(100, (entropy / 1.2) * 100);
+    document.getElementById("entropyFill").style.width = pct + "%";
+    agents[i].el.classList.add("active");
+    if (damped) agents[i].el.classList.add("damped");
+
+    // simple variation + confidence
+    let conf = Math.max(0, 1 - entropy * 0.5);
+    // rough L2 penalty simulation
+    const dist = Math.random() * 1.8 + 0.4;
+    conf = Math.max(0, conf - dist * 0.3);
+    agents[i].conf = conf;
+    agents[i].fill.style.width = (conf * 100) + "%";
+
+    document.getElementById("entropyStatus").textContent = 
+      `Agent ${i} · Entropy ${entropy.toFixed(2)}` + (damped ? " · DAMPED" : "");
+    document.getElementById("agentStatus").textContent = 
+      damped ? "Blaue Aura kühlt" : "Normale Divergenz";
+
+    await sleep(180);
+    entropy += 0.05;
+  }
+
+  // highlight winner
+  let best = 0, bestC = -1;
+  agents.forEach((a, i) => { if (a.conf > bestC) { bestC = a.conf; best = i; } });
+  agents[best].el.classList.add("winner");
+  document.getElementById("confStatus").textContent = 
+    `Winner: Agent ${best} · Confidence ${bestC.toFixed(2)} → Collapse`;
+  document.getElementById("stepLabel").textContent = "Fertig";
+  running = false;
+}
+
+reset();
+</script>
+</body>
+</html>
