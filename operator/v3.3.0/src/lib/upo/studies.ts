@@ -1,0 +1,287 @@
+import { SensorySemanticAdapter } from "./adapter";
+import { KERNEL_VERSION } from "./assumptions";
+import { createUPOConfig, type UPOConfigInput } from "./config";
+import { logicalClock, utcNow } from "./manifold";
+import { UnifiedProcessOntology } from "./ontology";
+import { DeterministicSensorSynthesizer } from "./sensors";
+import type { Clock, ExecutionMetrics, UPOConfig } from "./types";
+
+export type RunParams = {
+  envStress: number;
+  internalStress: number;
+  noiseLevel: number;
+  dampingFactor: number;
+  tolerance: number;
+  stressIncrement: number;
+  seed: number;
+  numAgents: number;
+  enableInertiaInversion: boolean;
+  maxLogSize?: number;
+  clock?: Clock;
+};
+
+export const DEFAULT_RUN: RunParams = {
+  envStress: 0.32,
+  internalStress: 0.42,
+  noiseLevel: 0.42,
+  dampingFactor: 0.8,
+  tolerance: 0.3,
+  stressIncrement: 0.05,
+  seed: 42,
+  numAgents: 20,
+  enableInertiaInversion: true,
+  maxLogSize: 1000,
+};
+
+export type SingleRun = {
+  params: RunParams;
+  config: UPOConfig;
+  metrics: ExecutionMetrics;
+  chainIntact: boolean;
+  logSize: number;
+  log: ReturnType<UnifiedProcessOntology["manifold"]["entries"]>;
+  orthogonality: { min: number; max: number; mean: number };
+};
+
+function configFromParams(params: RunParams): UPOConfig {
+  const input: UPOConfigInput = {
+    seed: params.seed,
+    dampingFactor: params.dampingFactor,
+    tolerance: params.tolerance,
+    stressIncrement: params.stressIncrement,
+    numAgents: params.numAgents,
+    enableInertiaInversion: params.enableInertiaInversion,
+    maxLogSize: params.maxLogSize ?? 1000,
+    debug: false,
+  };
+  return createUPOConfig(input);
+}
+
+export function executeSingle(params: RunParams): SingleRun {
+  const config = configFromParams(params);
+  const clock = params.clock ?? utcNow;
+  const upo = new UnifiedProcessOntology(config, clock);
+  const adapter = new SensorySemanticAdapter(config.latentDim, config.seed);
+  const raw = DeterministicSensorSynthesizer.synthesize(params.envStress, params.noiseLevel, params.seed);
+  const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
+  const metrics = upo.perceiveAndExecuteDetailed(inputs, params.internalStress, params.envStress, adapter);
+  return {
+    params,
+    config,
+    metrics,
+    chainIntact: upo.manifold.verifyChainIntegrity(),
+    logSize: upo.manifold.size,
+    log: upo.manifold.entries(),
+    orthogonality: adapter.computeOrthogonalityStats(),
+  };
+}
+
+export type StressRecord = {
+  iteration: number;
+  noiseLevel: number;
+  simulatedEnvironmentStress: number;
+  activeThreshold: number;
+  swarmPanicInterventions: number;
+  winnerAgent: number;
+  distPreCollapse: number;
+  distPostCollapse: number;
+  stabilityProxy: number;
+  winnerPreConfidence: number;
+  systemConfidencePostReferee: number;
+  decodedAction: string;
+  chainIntact: boolean;
+};
+
+/** Master protocol: noise 0.10→4.02, env 0.20→1.50, 50 iterations, one ontology. */
+export function run50IterationStressTest(seed = 42): { records: StressRecord[]; chainIntact: boolean } {
+  const cfg = createUPOConfig({ seed, tolerance: 0.25, debug: false });
+  const upo = new UnifiedProcessOntology(cfg, logicalClock("2026-06-01T00:00:00.000Z"));
+  const adapter = new SensorySemanticAdapter(cfg.latentDim, seed);
+  const records: StressRecord[] = [];
+
+  for (let it = 0; it < 50; it++) {
+    const noise = Math.round((0.1 + it * 0.08) * 10000) / 10000;
+    const envStress = Math.round(Math.min(1.5, 0.2 + it * 0.03) * 10000) / 10000;
+    const raw = DeterministicSensorSynthesizer.synthesize(envStress, noise, seed + it);
+    const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
+    const m = upo.perceiveAndExecuteDetailed(inputs, Math.min(1, noise * 0.35), envStress, adapter);
+    records.push({
+      iteration: it,
+      noiseLevel: noise,
+      simulatedEnvironmentStress: envStress,
+      activeThreshold: m.activeThreshold,
+      swarmPanicInterventions: m.interventions,
+      winnerAgent: m.winnerIndex,
+      distPreCollapse: m.distPreCollapse,
+      distPostCollapse: m.distPostCollapse,
+      stabilityProxy: m.stabilityProxy,
+      winnerPreConfidence: m.preConfidences[m.winnerIndex],
+      systemConfidencePostReferee: m.finalState.confidence,
+      decodedAction: m.decodedAction,
+      chainIntact: upo.manifold.verifyChainIntegrity(),
+    });
+  }
+  return { records, chainIntact: upo.manifold.verifyChainIntegrity() };
+}
+
+export const MULTI_SEEDS = [42, 101, 2026, 7777, 99999] as const;
+
+export type MultiSeedRow = {
+  seed: number;
+  winner: number;
+  distPre: number;
+  distPost: number;
+  proxy: number;
+  confidence: number;
+  inversion: number;
+  action: string;
+  cosine: number;
+  chainIntact: boolean;
+};
+
+export function runMultiSeed(base: RunParams, seeds: readonly number[] = MULTI_SEEDS): MultiSeedRow[] {
+  return seeds.map((seed) => {
+    const run = executeSingle({ ...base, seed, clock: logicalClock(`2026-03-01T00:00:00.000Z`) });
+    const m = run.metrics;
+    return {
+      seed,
+      winner: m.winnerIndex,
+      distPre: m.distPreCollapse,
+      distPost: m.distPostCollapse,
+      proxy: m.stabilityProxy,
+      confidence: m.finalState.confidence,
+      inversion: m.inversionMetric,
+      action: m.decodedAction,
+      cosine: m.actionCosineSimilarity,
+      chainIntact: run.chainIntact,
+    };
+  });
+}
+
+export type DampingRow = {
+  damping: number;
+  increment: number;
+  interventions: number;
+  winner: number;
+  confidence: number;
+  proxy: number;
+  action: string;
+};
+
+const DAMP_GRID = [0.7, 0.8, 0.9] as const;
+const INC_GRID = [0.03, 0.05, 0.08] as const;
+
+/** Chapter 8.4 at the master operating point, not the live slider, unless base overrides env/noise. */
+export function runDampingStudy(base: RunParams = DEFAULT_RUN): DampingRow[] {
+  const rows: DampingRow[] = [];
+  for (const damping of DAMP_GRID) {
+    for (const increment of INC_GRID) {
+      const run = executeSingle({
+        ...base,
+        seed: 42,
+        dampingFactor: damping,
+        stressIncrement: increment,
+        tolerance: 0.25,
+        clock: logicalClock("2026-04-01T00:00:00.000Z"),
+      });
+      const m = run.metrics;
+      rows.push({
+        damping,
+        increment,
+        interventions: m.interventions,
+        winner: m.winnerIndex,
+        confidence: m.finalState.confidence,
+        proxy: m.stabilityProxy,
+        action: m.decodedAction,
+      });
+    }
+  }
+  return rows;
+}
+
+export function stressCsv(records: readonly StressRecord[], headerLine?: string): string {
+  const header = headerLine
+    ? headerLine.split(",")
+    : [
+    "Iteration",
+    "Noise_Level",
+    "Simulated_Environment_Stress",
+    "Active_Threshold",
+    "Swarm_Panic_Interventions",
+    "Winner_Agent",
+    "Dist_Pre_Collapse",
+    "Dist_Post_Collapse",
+    "Stability_Proxy",
+    "Winner_Pre_Confidence",
+    "System_Confidence_Post_Referee",
+    "Decoded_Action",
+  ];
+  const lines = [header.join(",")];
+  for (const r of records) {
+    lines.push([
+      r.iteration,
+      r.noiseLevel.toFixed(4),
+      r.simulatedEnvironmentStress.toFixed(4),
+      r.activeThreshold.toFixed(2),
+      r.swarmPanicInterventions,
+      r.winnerAgent,
+      r.distPreCollapse.toFixed(6),
+      r.distPostCollapse.toFixed(6),
+      r.stabilityProxy.toFixed(6),
+      r.winnerPreConfidence.toFixed(6),
+      r.systemConfidencePostReferee.toFixed(6),
+      r.decodedAction,
+    ].join(","));
+  }
+  return lines.join("\n") + "\n";
+}
+
+export function agentCsv(run: SingleRun, headerLine = "Agent,Damped,Stress,d_pre,Pre_Conf,Post_Conf,Winner"): string {
+  const m = run.metrics;
+  const lines = [headerLine];
+  for (let i = 0; i < m.dampedFlags.length; i++) {
+    lines.push([
+      i,
+      m.dampedFlags[i],
+      m.agentStress[i].toFixed(4),
+      m.agentDistances[i].toFixed(6),
+      m.preConfidences[i].toFixed(6),
+      m.postConfidences[i].toFixed(6),
+      i === m.winnerIndex,
+    ].join(","));
+  }
+  return lines.join("\n") + "\n";
+}
+
+export function runJson(run: SingleRun): string {
+  return JSON.stringify(
+    {
+      version: KERNEL_VERSION,
+      params: run.params,
+      chainIntact: run.chainIntact,
+      orthogonality: run.orthogonality,
+      metrics: {
+        winnerIndex: run.metrics.winnerIndex,
+        distPreCollapse: run.metrics.distPreCollapse,
+        distPostCollapse: run.metrics.distPostCollapse,
+        stabilityProxy: run.metrics.stabilityProxy,
+        inversionMetric: run.metrics.inversionMetric,
+        activeThreshold: run.metrics.activeThreshold,
+        interventions: run.metrics.interventions,
+        triageWeights: run.metrics.triageWeights,
+        preConfidences: run.metrics.preConfidences,
+        postConfidences: run.metrics.postConfidences,
+        agentDistances: run.metrics.agentDistances,
+        dampedFlags: run.metrics.dampedFlags,
+        agentStress: run.metrics.agentStress,
+        decodedAction: run.metrics.decodedAction,
+        actionCosineSimilarity: run.metrics.actionCosineSimilarity,
+        confidence: run.metrics.finalState.confidence,
+        lineage: run.metrics.finalState.lineage,
+        finalVector: run.metrics.finalState.vector,
+      },
+    },
+    null,
+    2,
+  );
+}
