@@ -41,8 +41,31 @@ export type State = {
 
 export type ModalChannel = {
   vector: number[];
+  /** ||Wx+b|| before unit projection. Correction C1. */
   energy: number;
 };
+
+export type ExecutionMetrics = {
+  finalState: State;
+  winnerIndex: number;
+  distPreCollapse: number;
+  distPostCollapse: number;
+  stabilityProxy: number;
+  inversionMetric: number;
+  activeThreshold: number;
+  interventions: number;
+  triageWeights: Record<string, number>;
+  preConfidences: number[];
+  postConfidences: number[];
+  agentDistances: number[];
+  dampedFlags: boolean[];
+  /** Operative stress used for each agent after damping, before the increment. */
+  agentStress: number[];
+  decodedAction: string;
+  actionCosineSimilarity: number;
+};
+
+export type Clock = () => string;
 
 export const ACTION_NAMES = [
   "PROMPT_LLM_CAUTION",
