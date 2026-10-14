@@ -37,7 +37,7 @@ export function runAllChecks(): DiagnosticReport {
   const cfg = createUPOConfig({ seed: 42, maxLogSize: 25, debug: false });
   const clock = logicalClock();
   const upo = new UnifiedProcessOntology(cfg, clock);
-  const adapter = new SensorySemanticAdapter(cfg.latentDim, cfg.seed);
+  const adapter = new SensorySemanticAdapter(cfg.latentDim, cfg.seed, cfg.actionMinMargin);
   const raw = DeterministicSensorSynthesizer.synthesize(0.32, 0.42, 42);
   const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
 
@@ -146,7 +146,7 @@ export function runAllChecks(): DiagnosticReport {
 
   try {
     const upo2 = new UnifiedProcessOntology(cfg, logicalClock());
-    const adapter2 = new SensorySemanticAdapter(cfg.latentDim, cfg.seed);
+    const adapter2 = new SensorySemanticAdapter(cfg.latentDim, cfg.seed, cfg.actionMinMargin);
     const inputs2 = adapter2.ingest(raw.visual, raw.auditory, raw.imu);
     const metrics2 = upo2.perceiveAndExecuteDetailed(inputs2, 0.42, 0.32, adapter2);
     const distOk = firstMetrics !== null && firstMetrics.distPostCollapse === metrics2.distPostCollapse;

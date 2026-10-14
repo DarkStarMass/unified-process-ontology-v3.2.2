@@ -1,4 +1,4 @@
-import { cosine } from "./math";
+import { cosine, l2 } from "./math";
 import type { MemoryManifold } from "./manifold";
 import { STREAM_SWARM, SeededRng, streamSeed } from "./rng";
 import { LayerType, type State, type UPOConfig } from "./types";
@@ -51,21 +51,25 @@ export class ParasympatheticSwarm {
       }
 
       const variation = new Array<number>(base.length);
+      let isInversionProbe = false;
       if (i === 0 && this.config.enableInertiaInversion) {
         for (let j = 0; j < base.length; j++) {
           variation[j] = Math.abs(base[j]) > 1e-3 ? -base[j] : 0;
         }
         inversionMetric = cosine(variation, base);
+        isInversionProbe = true;
       } else {
+        const sigma = (current * this.config.noiseScale * l2(base)) / Math.sqrt(base.length);
+        const amplitude = Math.sqrt(3) * sigma;
         for (let j = 0; j < base.length; j++) {
-          variation[j] = base[j] + this.rng.uniform(-0.1, 0.1) * current;
+          variation[j] = base[j] + this.rng.uniform(-amplitude, amplitude);
         }
         if (i === 0) inversionMetric = cosine(variation, base);
       }
 
       const lineage = manifold.appendTransition(`agent_${i}`, action, variation);
       const confidence = Math.max(0, 1 - current * 0.5);
-      paths.push({ vector: variation, lineage, confidence });
+      paths.push({ vector: variation, lineage, confidence, isInversionProbe });
       dampedFlags.push(isDamped);
       agentStress.push(current);
       current += this.config.stressIncrement;

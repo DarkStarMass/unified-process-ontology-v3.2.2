@@ -1,6 +1,16 @@
 import { dot, l2 } from "./math";
 import { STREAM_ADAPTER, SeededRng, streamSeed } from "./rng";
+import { compensateGravity } from "./sensors";
 import { ACTION_NAMES, type ActionName, type ModalChannel } from "./types";
+
+export const DEFAULT_ACTION_MIN_MARGIN = 0.05;
+
+export type DecodeResult = {
+  action: ActionName | "UNDECIDED";
+  cosine: number;
+  margin: number;
+  runnerUp: ActionName;
+};
 
 function matVec(w: Float64Array, x: ArrayLike<number>, rows: number, cols: number): Float64Array {
   if (x.length !== cols) throw new Error(`matVec: expected ${cols} features, got ${x.length}`);
@@ -33,11 +43,16 @@ export class SensorySemanticAdapter {
   private readonly wAuditory: Float64Array;
   private readonly wHaptic: Float64Array;
   readonly actionSpace: Record<ActionName, Float64Array>;
+  readonly minMargin: number;
 
-  constructor(readonly targetDim: number, seed: number) {
+  constructor(readonly targetDim: number, seed: number, minMargin = DEFAULT_ACTION_MIN_MARGIN) {
     if (!Number.isInteger(targetDim) || targetDim <= 0) {
       throw new Error("Adapter targetDim must be a positive integer.");
     }
+    if (!Number.isFinite(minMargin) || minMargin < 0) {
+      throw new Error("Adapter minMargin must be finite and >= 0.");
+    }
+    this.minMargin = minMargin;
     const rng = new SeededRng(streamSeed(seed, STREAM_ADAPTER));
     this.wVisual = this.fillNormal(rng, targetDim * 16, 0.1);
     this.wAuditory = this.fillNormal(rng, targetDim * 8, 0.1);
@@ -80,7 +95,13 @@ export class SensorySemanticAdapter {
     if (imuFeatures.length !== 6) {
       throw new Error(`IMU data must have shape (6,), got (${imuFeatures.length},)`);
     }
-    return asUnitChannel(matVec(this.wHaptic, imuFeatures, this.targetDim, 6));
+    const deviation = compensateGravity(imuFeatures);
+    if (l2(deviation) < 1e-12) {
+      const vector = new Array<number>(this.targetDim).fill(0);
+      vector[0] = 1;
+      return { vector, energy: 0 };
+    }
+    return asUnitChannel(matVec(this.wHaptic, deviation, this.targetDim, 6));
   }
 
   ingest(vis: ArrayLike<number>, aud: ArrayLike<number>, imu: ArrayLike<number>): Record<string, ModalChannel> {
@@ -91,23 +112,36 @@ export class SensorySemanticAdapter {
     };
   }
 
-  decodeDetailed(stateVector: ArrayLike<number>): { action: ActionName; cosine: number } {
+  decodeDetailed(stateVector: ArrayLike<number>): DecodeResult {
     if (stateVector.length !== this.targetDim) {
       throw new Error(`decode: state dim ${stateVector.length} != ${this.targetDim}`);
     }
     let bestName: ActionName = ACTION_NAMES[0];
     let best = -Infinity;
+    let runnerUp: ActionName = ACTION_NAMES[1];
+    let runner = -Infinity;
     for (const name of ACTION_NAMES) {
       const c = dot(stateVector, this.actionSpace[name]);
       if (c > best) {
+        runner = best;
+        runnerUp = bestName;
         best = c;
         bestName = name;
+      } else if (c > runner) {
+        runner = c;
+        runnerUp = name;
       }
     }
-    return { action: bestName, cosine: best };
+    const margin = best - runner;
+    return {
+      action: margin >= this.minMargin ? bestName : "UNDECIDED",
+      cosine: best,
+      margin,
+      runnerUp,
+    };
   }
 
-  decode(stateVector: ArrayLike<number>): ActionName {
+  decode(stateVector: ArrayLike<number>): ActionName | "UNDECIDED" {
     return this.decodeDetailed(stateVector).action;
   }
 

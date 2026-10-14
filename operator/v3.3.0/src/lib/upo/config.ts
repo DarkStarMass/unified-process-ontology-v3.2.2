@@ -14,6 +14,9 @@ export type UPOConfigInput = {
   seed?: number;
   maxLogSize?: number;
   enableInertiaInversion?: boolean;
+  inversionCompetes?: boolean;
+  noiseScale?: number;
+  actionMinMargin?: number;
   debug?: boolean;
 };
 
@@ -74,6 +77,23 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
     throw new Error("UPOConfig: stress thresholds must be strictly positive.");
   }
 
+  const enableInertiaInversion = input.enableInertiaInversion ?? true;
+  const inversionCompetes = input.inversionCompetes ?? false;
+  const noiseScale = input.noiseScale ?? 1;
+  const actionMinMargin = input.actionMinMargin ?? 0.05;
+  if (typeof inversionCompetes !== "boolean") {
+    throw new Error("UPOConfig: inversionCompetes must be a boolean.");
+  }
+  if (enableInertiaInversion && !inversionCompetes && numAgents < 2) {
+    throw new Error(
+      "UPOConfig: excluding the inertia probe from selection requires numAgents >= 2.",
+    );
+  }
+  finite("noiseScale", noiseScale);
+  if (noiseScale < 0) throw new Error("UPOConfig: noiseScale must be non-negative.");
+  finite("actionMinMargin", actionMinMargin);
+  if (actionMinMargin < 0) throw new Error("UPOConfig: actionMinMargin must be non-negative.");
+
   return Object.freeze({
     numAgents,
     baseStressThreshold,
@@ -86,7 +106,10 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
     groundTruth: Object.freeze(groundTruth),
     seed,
     maxLogSize,
-    enableInertiaInversion: input.enableInertiaInversion ?? true,
+    enableInertiaInversion,
+    inversionCompetes,
+    noiseScale,
+    actionMinMargin,
     debug: input.debug ?? false,
   });
 }

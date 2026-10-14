@@ -13,9 +13,10 @@ export class SensoryTriageAgent {
   ) {}
 
   /**
-   * Stable softmax over prior * energy.
-   * Correction C1: energy is ||Wx+b|| before sphere projection.
-   * If energy is omitted, L2(vector) is used (PDF path; degenerate after unit-norm).
+   * Stable softmax over prior * log1p(energy).
+   * C1 kept energy as ||Wx+b|| before the sphere projection.
+   * C9 compresses that energy: the linear product was one-hot on haptics.
+   * If energy is omitted, L2(vector) is used.
    */
   processOverload(inputs: Record<string, ModalChannel | number[]>): { state: State; weights: Record<string, number> } {
     const keys = Object.keys(inputs);
@@ -42,7 +43,7 @@ export class SensoryTriageAgent {
     const ordered = [...channels.keys()];
     const scores = ordered.map((k) => {
       const prior = this.revisor.baseWeights[k] ?? 1;
-      return prior * channels.get(k)!.energy;
+      return prior * Math.log1p(channels.get(k)!.energy);
     });
     const sm = softmax(scores);
     const weights: Record<string, number> = {};

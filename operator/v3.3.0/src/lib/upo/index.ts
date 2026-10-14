@@ -11,6 +11,7 @@ export {
   MULTI_SEEDS,
   agentCsv,
   executeSingle,
+  reproduceExportedRun,
   run50IterationStressTest,
   runDampingStudy,
   runJson,

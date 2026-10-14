@@ -22,6 +22,12 @@ export type UPOConfig = {
   seed: number;
   maxLogSize: number;
   enableInertiaInversion: boolean;
+  /** When false, an inertia-inverted agent 0 is a probe and cannot win. Correction C6. */
+  inversionCompetes: boolean;
+  /** Multiplier on dimension-scaled swarm noise. Correction C10. Default 1. */
+  noiseScale: number;
+  /** Minimum cosine gap required to name an action. Correction C11. */
+  actionMinMargin: number;
   debug: boolean;
 };
 
@@ -37,6 +43,8 @@ export type State = {
   vector: number[];
   lineage: string;
   confidence: number;
+  /** Agent 0 under inertia inversion. Visible, but excluded from the decision unless inversionCompetes. */
+  isInversionProbe?: boolean;
 };
 
 export type ModalChannel = {
@@ -58,11 +66,21 @@ export type ExecutionMetrics = {
   preConfidences: number[];
   postConfidences: number[];
   agentDistances: number[];
+  /** Euclidean distance of the unit direction to ground truth. Correction C7. */
+  sphereDistances: number[];
   dampedFlags: boolean[];
   /** Operative stress used for each agent after damping, before the increment. */
   agentStress: number[];
+  /** True for the inertia probe (agent 0 when inversion is on). */
+  inversionProbe: boolean[];
+  /** Best eligible confidence is <= 0. Correction C6. */
+  degenerate: boolean;
+  /** Eligible agents sharing the winning confidence and sphere distance. */
+  tieCount: number;
   decodedAction: string;
   actionCosineSimilarity: number;
+  actionMargin: number;
+  actionRunnerUp: string;
 };
 
 export type Clock = () => string;

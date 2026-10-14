@@ -7,6 +7,19 @@ export type RawSensors = {
   imu: Float64Array;
 };
 
+/** Rest acceleration along +ax. Correction C8. The raw IMU keeps this constant. */
+export const GRAVITY_REF: readonly number[] = [9.81, 0, 0, 0, 0, 0];
+
+/** Deviation from rest. The synthesizer return value is not modified. */
+export function compensateGravity(imuRaw: ArrayLike<number>): number[] {
+  if (imuRaw.length !== GRAVITY_REF.length) {
+    throw new Error(`IMU data must have shape (${GRAVITY_REF.length},), got (${imuRaw.length},)`);
+  }
+  const out = new Array<number>(imuRaw.length);
+  for (let i = 0; i < imuRaw.length; i++) out[i] = imuRaw[i] - GRAVITY_REF[i];
+  return out;
+}
+
 /**
  * Deterministic raw sensors.
  * Vision 16D, audio 8D octave bands, IMU 6D [ax, ay, az, gx, gy, gz]

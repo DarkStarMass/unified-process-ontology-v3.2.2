@@ -14,12 +14,36 @@ import {
   type UPOConfig,
 } from "./types";
 
-function winnerIndexOf(confidences: readonly number[]): number {
-  let best = 0;
-  for (let i = 1; i < confidences.length; i++) {
-    if (confidences[i] > confidences[best]) best = i;
+export type WinnerPick = {
+  index: number;
+  degenerate: boolean;
+  tieCount: number;
+};
+
+/** Eligible pool excludes the inertia probe unless probeCompetes. Ties break toward the smaller sphere distance. */
+export function selectWinner(
+  paths: readonly { isInversionProbe?: boolean }[],
+  conf: readonly number[],
+  dist: readonly number[],
+  probeCompetes: boolean,
+): WinnerPick {
+  const pool: number[] = [];
+  for (let i = 0; i < paths.length; i++) {
+    if (probeCompetes || !paths[i].isInversionProbe) pool.push(i);
   }
-  return best;
+  if (pool.length === 0) throw new Error("No eligible agent for selection.");
+  let best = pool[0];
+  for (let k = 1; k < pool.length; k++) {
+    const i = pool[k];
+    const betterConf = conf[i] > conf[best];
+    const sameConfCloser = conf[i] === conf[best] && dist[i] < dist[best];
+    if (betterConf || sameConfCloser) best = i;
+  }
+  let tieCount = 0;
+  for (const i of pool) {
+    if (conf[i] === conf[best] && dist[i] === dist[best]) tieCount += 1;
+  }
+  return { index: best, degenerate: conf[best] <= 0, tieCount };
 }
 
 export class UnifiedProcessOntology {
@@ -57,15 +81,16 @@ export class UnifiedProcessOntology {
     const { state: current, weights: triageWeights } = this.triage.processOverload(inputs);
     const swarm = this.swarm.generateAndDampen(current.vector, internal, thr, this.manifold);
     const preConfs = swarm.paths.map((p) => p.confidence);
-    const { critiqued, distances } = this.referees.critique(swarm.paths);
+    const { critiqued, distances, sphereDistances } = this.referees.critique(swarm.paths);
     const postConfs = critiqued.map((p) => p.confidence);
-    const winnerIndex = winnerIndexOf(postConfs);
+    const picked = selectWinner(critiqued, postConfs, sphereDistances, this.config.inversionCompetes);
+    const winnerIndex = picked.index;
     const winner = critiqued[winnerIndex];
     const distPre = distances[winnerIndex];
 
     const lineage = this.manifold.appendTransition(
       LayerType.REFLECTION.toUpperCase(),
-      `winner=agent_${winnerIndex}|conf=${winner.confidence.toFixed(4)}`,
+      `winner=agent_${winnerIndex}|conf=${winner.confidence.toFixed(4)}|deg=${picked.degenerate ? 1 : 0}`,
       winner.vector,
     );
     const final = this.collapse({ vector: winner.vector, lineage, confidence: winner.confidence });
@@ -74,10 +99,14 @@ export class UnifiedProcessOntology {
 
     let decodedAction = "UNBOUND";
     let actionCosine = 0;
+    let actionMargin = 0;
+    let actionRunnerUp = "";
     if (adapter) {
       const decoded = adapter.decodeDetailed(final.vector);
       decodedAction = decoded.action;
       actionCosine = decoded.cosine;
+      actionMargin = decoded.margin;
+      actionRunnerUp = decoded.runnerUp;
     }
 
     return {
@@ -93,10 +122,16 @@ export class UnifiedProcessOntology {
       preConfidences: preConfs,
       postConfidences: postConfs,
       agentDistances: distances,
+      sphereDistances,
       dampedFlags: swarm.dampedFlags,
       agentStress: swarm.agentStress,
+      inversionProbe: swarm.paths.map((p) => p.isInversionProbe === true),
+      degenerate: picked.degenerate,
+      tieCount: picked.tieCount,
       decodedAction,
       actionCosineSimilarity: actionCosine,
+      actionMargin,
+      actionRunnerUp,
     };
   }
 
