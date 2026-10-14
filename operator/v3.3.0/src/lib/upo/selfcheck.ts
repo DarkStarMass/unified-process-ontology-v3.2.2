@@ -9,7 +9,8 @@ import { DynamicStressRegulator } from "./regulator";
 import { SeededRng, streamSeed } from "./rng";
 import { DeterministicSensorSynthesizer } from "./sensors";
 import { sha256Hex } from "./sha256";
-import { DEFAULT_RUN, run50IterationStressTest, runDampingStudy, runMultiSeed } from "./studies";
+import { DEFAULT_RUN, executeSingle, reproduceExportedRun, run50IterationStressTest, runDampingStudy, runJson, runMultiSeed } from "./studies";
+import type { RunParams } from "./studies";
 import { ParasympatheticSwarm } from "./swarm";
 import { ContextRevisor, SensoryTriageAgent } from "./triage";
 import { ACTION_NAMES, GENESIS_ANCHOR } from "./types";
@@ -88,6 +89,14 @@ function block1(): void {
     threw = true;
   }
   assert(threw, "negative tolerance must throw");
+
+  threw = false;
+  try {
+    createUPOConfig({ numAgents: 1, enableInertiaInversion: true, inversionCompetes: false });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "probe excluded with a single agent must throw");
 
   threw = false;
   try {
@@ -204,14 +213,20 @@ function block2(): void {
     auditory: { vector: [0, 1], energy: 1 },
     haptic: { vector: [0, 1], energy: 1 },
   });
-  const prior = softmax([1, 0.8, 1.2]);
-  assert(Math.abs(blind.weights.visual - prior[0]) < 1e-12, "unit energy recovers prior softmax");
+  const prior = softmax([1, 0.8, 1.2].map((p) => p * Math.log1p(1)));
+  assert(Math.abs(blind.weights.visual - prior[0]) < 1e-12, "equal energy recovers log1p-prior softmax");
   const energetic = triage.processOverload({
     visual: { vector: [1, 0], energy: 10 },
     auditory: { vector: [0, 1], energy: 0.01 },
     haptic: { vector: [0, 1], energy: 0.01 },
   });
-  assert(energetic.weights.visual > 0.99, `visual energy must dominate, got ${energetic.weights.visual}`);
+  const energeticExpected = softmax([Math.log1p(10), 0.8 * Math.log1p(0.01), 1.2 * Math.log1p(0.01)]);
+  assert(
+    Math.abs(energetic.weights.visual - energeticExpected[0]) < 1e-12,
+    `log1p visual weight ${energetic.weights.visual}`,
+  );
+  assert(energetic.weights.visual < 0.95, "C9 must not one-hot a finite energy gap");
+  assert(energetic.weights.visual > energetic.weights.haptic, "larger energy still leads");
   assert(triMan.verifyChainIntegrity(), "triage lineage");
 
   let empty = false;
@@ -236,7 +251,7 @@ function block3(): void {
   assert(louder.imu[3] !== raw.imu[3], "noise level changes gyro");
 
   const cfg = createUPOConfig({ seed: 42, maxLogSize: 64, debug: false });
-  const adapter = new SensorySemanticAdapter(cfg.latentDim, cfg.seed);
+  const adapter = new SensorySemanticAdapter(cfg.latentDim, cfg.seed, cfg.actionMinMargin);
   const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
   for (const key of ["visual", "auditory", "haptic"]) {
     assert(Math.abs(l2(inputs[key].vector) - 1) < 1e-9, `${key} not unit`);
@@ -266,7 +281,12 @@ function block3(): void {
   );
   assert(metrics.inversionMetric < -0.99, `inversion ${metrics.inversionMetric}`);
   assert(metrics.activeThreshold === 0.5, "env 0.32 selects emergency threshold");
-  assert(ACTION_NAMES.includes(metrics.decodedAction as (typeof ACTION_NAMES)[number]), metrics.decodedAction);
+  assert(
+    metrics.decodedAction === "UNDECIDED" ||
+      (ACTION_NAMES as readonly string[]).includes(metrics.decodedAction),
+    metrics.decodedAction,
+  );
+  assert(Number.isFinite(metrics.actionMargin) && metrics.actionMargin >= 0, "action margin");
   assert(upo.manifold.verifyChainIntegrity(), "pipeline chain");
   assert(upo.manifold.size === cfg.numAgents + 5, `log size ${upo.manifold.size}`);
 
@@ -279,7 +299,7 @@ function block3(): void {
   assert(weightDelta > 1e-3, `C1 delta=${weightDelta}`);
 
   const upoB = new UnifiedProcessOntology(cfg, logicalClock());
-  const adapterB = new SensorySemanticAdapter(cfg.latentDim, cfg.seed);
+  const adapterB = new SensorySemanticAdapter(cfg.latentDim, cfg.seed, cfg.actionMinMargin);
   const metricsB = upoB.perceiveAndExecuteDetailed(
     adapterB.ingest(raw.visual, raw.auditory, raw.imu),
     0.42,
@@ -290,7 +310,13 @@ function block3(): void {
   assert(metrics.decodedAction === metricsB.decodedAction, "non-deterministic action");
   assert(metrics.finalState.lineage === metricsB.finalState.lineage, "logical clock lineage diverged");
 
-  const zeroBase = createUPOConfig({ latentDim: 4, numAgents: 1, enableInertiaInversion: true, maxLogSize: 16 });
+  const zeroBase = createUPOConfig({
+    latentDim: 4,
+    numAgents: 1,
+    enableInertiaInversion: true,
+    inversionCompetes: true,
+    maxLogSize: 16,
+  });
   const zeroOnto = new UnifiedProcessOntology(zeroBase, logicalClock());
   let collapsed = false;
   try {
@@ -356,7 +382,121 @@ function block4(): void {
   );
 }
 
+function metricsOf(params: RunParams) {
+  return executeSingle({ ...params, clock: logicalClock("2026-02-02T00:00:00.000Z") }).metrics;
+}
+
+function block5(): void {
+  const tied = metricsOf({ ...DEFAULT_RUN, tolerance: 1, seed: 42 });
+  assert(tied.postConfidences.every((c) => c === 0), `T1 confidences not all zero: ${tied.postConfidences[0]}`);
+  assert(tied.inversionProbe[0] === true, "T1 agent 0 is the probe");
+  assert(tied.winnerIndex !== 0, `T1 probe won, index ${tied.winnerIndex}`);
+  assert(tied.degenerate === true, "T1 all-zero must be flagged");
+
+  const stress = run50IterationStressTest(42);
+  const probeWins = stress.records.filter((r) => r.winnerAgent === 0).length;
+  assert(probeWins === 0, `T2 probe wins ${probeWins}/50`);
+  let previousInternal = -1;
+  for (const row of stress.records) {
+    assert(row.internalStress > previousInternal, `T stress plateau at ${row.iteration}`);
+    previousInternal = row.internalStress;
+  }
+  assert(stress.records[43].simulatedEnvironmentStress < 1.5, "env plateau starts later than it 43");
+  assert(stress.records[44].simulatedEnvironmentStress === 1.5, "documented env cap at iteration 44");
+  assert(stress.records[49].internalStress < 1.5, `internal end ${stress.records[49].internalStress}`);
+
+  const refs = new HostileReferees(createUPOConfig({ latentDim: 8, tolerance: 0.4 }));
+  const v = [0.2, -0.4, 0.1, 0.3, -0.2, 0.05, 0.2, -0.1];
+  const scaleA = refs.critique([{ vector: v, lineage: "a", confidence: 0.8 }]).critiqued[0].confidence;
+  const scaleB = refs.critique([{ vector: v.map((x) => 3 * x), lineage: "b", confidence: 0.8 }]).critiqued[0].confidence;
+  assert(Math.abs(scaleA - scaleB) < 1e-12, `T3 ${scaleA} vs ${scaleB}`);
+  const rawA = refs.critique([{ vector: v, lineage: "a", confidence: 0.8 }]).distances[0];
+  const rawB = refs.critique([{ vector: v.map((x) => 3 * x), lineage: "b", confidence: 0.8 }]).distances[0];
+  assert(Math.abs(rawA - rawB) > 1e-6, "T3 raw distance must still see the length");
+
+  const haptic = new SensorySemanticAdapter(512, 42);
+  const lowImu = DeterministicSensorSynthesizer.synthesize(0.2, 0.42, 42);
+  const highImu = DeterministicSensorSynthesizer.synthesize(1.5, 0.42, 42);
+  assert(lowImu.imu[0] === 9.81 && highImu.imu[0] === 9.81, "raw gravity preserved");
+  const hapticCos = cosine(haptic.embedHaptic(lowImu.imu).vector, haptic.embedHaptic(highImu.imu).vector);
+  assert(hapticCos < 0.95, `T4 haptic cosine ${hapticCos}`);
+
+  const weightKeys = ["visual", "auditory", "haptic"] as const;
+  let crossEnv = 0;
+  const atLow = metricsOf({ ...DEFAULT_RUN, envStress: 0.2, seed: 42 });
+  const atHigh = metricsOf({ ...DEFAULT_RUN, envStress: 1.5, seed: 42 });
+  for (const env of [0.2, 0.8, 1.5]) {
+    for (const seed of [42, 101, 2026]) {
+      const row = metricsOf({ ...DEFAULT_RUN, envStress: env, seed });
+      for (const key of weightKeys) {
+        assert(row.triageWeights[key] <= 0.9, `T5 ${key}=${row.triageWeights[key]} env=${env} seed=${seed}`);
+      }
+    }
+  }
+  for (const key of weightKeys) {
+    crossEnv = Math.max(crossEnv, Math.abs(atLow.triageWeights[key] - atHigh.triageWeights[key]));
+  }
+  assert(crossEnv > 0.01, `T5 env delta ${crossEnv}`);
+
+  for (const stressValue of [0.25, 0.5, 1, 1.5]) {
+    const cfg = createUPOConfig({
+      seed: 42,
+      numAgents: 20,
+      latentDim: 512,
+      stressIncrement: 0,
+      noiseScale: 1,
+      enableInertiaInversion: true,
+      maxLogSize: 64,
+    });
+    const manifold = new MemoryManifold(cfg, logicalClock());
+    const base = buildUnitGroundTruth(512);
+    const swarm = new ParasympatheticSwarm(cfg).generateAndDampen(base, stressValue, 10, manifold);
+    let sum = 0;
+    let count = 0;
+    for (const path of swarm.paths) {
+      if (path.isInversionProbe) continue;
+      sum += cosine(path.vector, base);
+      count += 1;
+    }
+    const mean = sum / count;
+    const expected = 1 / Math.sqrt(1 + stressValue * stressValue);
+    assert(Math.abs(mean - expected) < 0.05, `T6 stress ${stressValue} mean ${mean} expected ${expected}`);
+  }
+
+  const undecided = new SensorySemanticAdapter(512, 42, 0.5).decodeDetailed(buildUnitGroundTruth(512));
+  assert(undecided.margin < 0.5 && undecided.action === "UNDECIDED", `T7 ${undecided.action} margin ${undecided.margin}`);
+  const named = new SensorySemanticAdapter(64, 7, 0.05);
+  const prototype = Array.from(named.actionSpace.MOTOR_STOP_IMMEDIATELY);
+  const decisive = named.decodeDetailed(prototype);
+  assert(decisive.action === "MOTOR_STOP_IMMEDIATELY" && decisive.margin >= 0.05, `T7 named ${decisive.action} ${decisive.margin}`);
+
+  for (const tolerance of [0, 0.25, 0.5, 0.75, 1, 1.5]) {
+    for (const seed of [42, 101, 2026]) {
+      const row = metricsOf({ ...DEFAULT_RUN, tolerance, seed });
+      const eligible = row.postConfidences.filter((_, i) => !row.inversionProbe[i]);
+      const allZero = eligible.every((c) => c <= 0);
+      assert(row.degenerate === allZero, `T8 degenerate tol=${tolerance} seed=${seed} flag=${row.degenerate}`);
+      if (row.inversionProbe[0]) assert(row.winnerIndex !== 0, `T8 probe won tol=${tolerance} seed=${seed}`);
+      assert(Number.isFinite(row.distPostCollapse), "T8 finite distance");
+    }
+  }
+
+  const off = metricsOf({ ...DEFAULT_RUN, enableInertiaInversion: false, tolerance: 1, seed: 42 });
+  assert(off.inversionProbe.every((flag) => flag === false), "inversion off clears the probe");
+  assert(off.degenerate === true, "tolerance 1 stays degenerate with inversion off");
+
+  const exported = executeSingle({ ...DEFAULT_RUN, clock: logicalClock("2026-02-02T00:00:00.000Z") });
+  const replay = reproduceExportedRun(runJson(exported));
+  assert(replay.ok, `export replay ${replay.detail}`);
+
+  console.log("[OK] Block 5: T1–T8, stress without internal plateau, JSON replay.");
+  console.log(
+    `  T4 haptic cos=${hapticCos.toFixed(4)} T5 envDelta=${crossEnv.toFixed(4)} T1 winner=A${tied.winnerIndex} degenerate=${tied.degenerate}`,
+  );
+}
+
 block1();
 block2();
 block3();
 block4();
+block5();
