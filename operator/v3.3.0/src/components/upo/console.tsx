@@ -13,6 +13,7 @@ import {
   executeSingle,
   run50IterationStressTest,
   runDampingStudy,
+  reproduceExportedRun,
   runJson,
   runMultiSeed,
   stressCsv,
@@ -47,9 +48,10 @@ function download(filename: string, body: string, mime: string) {
   URL.revokeObjectURL(url);
 }
 
-type Job = "run" | "diag" | "stress" | "seeds" | "grid";
+type Job = "run" | "diag" | "stress" | "seeds" | "grid" | "replay";
 
 function gloss(messages: Messages, action: string): string {
+  if (action === "UNDECIDED") return messages.undecided;
   return messages.actions[action as ActionName] ?? "";
 }
 
@@ -79,7 +81,14 @@ function sanitize(partial: Partial<Controls>, base: Controls): Controls {
     tolerance: clamp(num(partial.tolerance, base.tolerance), 0, 1.5),
     stressIncrement: clamp(num(partial.stressIncrement, base.stressIncrement), 0, 0.2),
     seed: int(partial.seed, base.seed),
-    numAgents: clamp(int(partial.numAgents, base.numAgents), 1, 40),
+    numAgents: (() => {
+      const agents = clamp(int(partial.numAgents, base.numAgents), 1, 40);
+      const inversion =
+        typeof partial.enableInertiaInversion === "boolean"
+          ? partial.enableInertiaInversion
+          : base.enableInertiaInversion;
+      return inversion && agents < 2 ? 2 : agents;
+    })(),
     enableInertiaInversion:
       typeof partial.enableInertiaInversion === "boolean"
         ? partial.enableInertiaInversion
@@ -121,6 +130,7 @@ export function UpoConsole() {
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [replay, setReplay] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -174,7 +184,6 @@ export function UpoConsole() {
   }
 
   const weights = run?.metrics.triageWeights;
-  const flat = run ? run.metrics.postConfidences.every((c) => c === 0) : false;
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -221,7 +230,13 @@ export function UpoConsole() {
                 value={controls.numAgents}
                 onChange={(e) => {
                   const parsed = Number(e.target.value);
-                  if (Number.isInteger(parsed)) setControls((c) => ({ ...c, numAgents: clamp(parsed, 1, 40) }));
+                  if (Number.isInteger(parsed)) {
+                    const next = clamp(parsed, 1, 40);
+                    setControls((c) => ({
+                      ...c,
+                      numAgents: c.enableInertiaInversion && next < 2 ? 2 : next,
+                    }));
+                  }
                 }}
               />
             </label>
@@ -230,7 +245,13 @@ export function UpoConsole() {
             <FieldSwitch
               label={t.inversion}
               checked={controls.enableInertiaInversion}
-              onChange={(enableInertiaInversion) => setControls((c) => ({ ...c, enableInertiaInversion }))}
+              onChange={(enableInertiaInversion) =>
+                setControls((c) => ({
+                  ...c,
+                  enableInertiaInversion,
+                  numAgents: enableInertiaInversion && c.numAgents < 2 ? 2 : c.numAgents,
+                }))
+              }
             />
           </div>
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -273,12 +294,22 @@ export function UpoConsole() {
             >
               {t.json}
             </Button>
+            <Button
+              variant="secondary"
+              disabled={busy !== null || !run}
+              onClick={() =>
+                run &&
+                void work("replay", () => {
+                  const verdict = reproduceExportedRun(runJson(run));
+                  setReplay(verdict.ok ? t.replayOk : `${t.replayBad} ${verdict.detail}`);
+                })
+              }
+            >
+              {t.replay}
+            </Button>
           </div>
-          {restored ? (
-            <p className="mt-3 text-xs leading-normal text-muted">
-              {t.restoredNote}
-            </p>
-          ) : null}
+          {restored ? <p className="mt-3 text-xs leading-normal text-muted">{t.restoredNote}</p> : null}
+          {replay ? <p className="mt-3 text-xs leading-normal text-muted">{replay}</p> : null}
         </Panel>
 
         {error ? (
@@ -301,29 +332,34 @@ export function UpoConsole() {
                   value={`${n(run.metrics.preConfidences[run.metrics.winnerIndex], 4)} → ${n(run.metrics.finalState.confidence, 4)}`}
                 />
                 <Metric label={t.winner} value={`A${run.metrics.winnerIndex}`} />
-                <Metric label={t.action} value={`${run.metrics.decodedAction}  cos ${n(run.metrics.actionCosineSimilarity, 4)}`} />
+                <Metric
+                  label={t.action}
+                  value={`${run.metrics.decodedAction}  cos ${n(run.metrics.actionCosineSimilarity, 4)}`}
+                />
                 <p className="-mt-1 mb-2 text-right text-xs leading-normal text-muted">{gloss(t, run.metrics.decodedAction)}</p>
+                <Metric label={t.margin} value={`${n(run.metrics.actionMargin, 4)}  →  ${run.metrics.actionRunnerUp || "—"}`} />
+                <Metric label={t.sphere} value={n(run.metrics.sphereDistances[run.metrics.winnerIndex], 4)} />
+                <p className="mb-2 text-xs leading-normal text-muted">{t.actionPlaceholder}</p>
                 <Metric label={t.lineage} value={run.metrics.finalState.lineage.slice(0, 16)} />
                 <Metric
                   label={t.ortho}
                   value={`${n(run.orthogonality.min, 3)} / ${n(run.orthogonality.max, 3)} / ${n(run.orthogonality.mean, 4)}`}
                 />
-                {flat ? (
-                  <p className="mt-3 text-sm text-danger">
-                    {t.flat}
-                  </p>
-                ) : null}
+                {run.metrics.degenerate ? <p className="mt-3 text-sm text-danger">{t.degenerate}</p> : null}
                 <div className="mt-4 grid grid-cols-5 gap-1.5 sm:grid-cols-10">
                   {run.metrics.dampedFlags.map((damped, i) => (
                     <div
                       key={i}
+                      title={run.metrics.inversionProbe[i] ? t.probe : undefined}
                       className={
                         "flex h-8 items-center justify-center rounded-sm border font-mono text-xs " +
                         (i === run.metrics.winnerIndex
                           ? "border-ok bg-ok text-primary-foreground"
-                          : damped
-                            ? "border-primary text-foreground"
-                            : "border-border text-muted")
+                          : run.metrics.inversionProbe[i]
+                            ? "border-dashed border-muted text-muted"
+                            : damped
+                              ? "border-primary text-foreground"
+                              : "border-border text-muted")
                       }
                     >
                       A{i}
@@ -341,7 +377,7 @@ export function UpoConsole() {
                     </div>
                   ))}
                 </div>
-                {weights.haptic > 0.95 ? (
+                {(["visual", "auditory", "haptic"] as const).some((key) => (weights[key] ?? 0) > 0.95) ? (
                   <p className="mt-2 text-xs leading-normal text-muted">
                     {t.hapticNote}
                   </p>
