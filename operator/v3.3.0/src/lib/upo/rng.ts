@@ -19,6 +19,8 @@ function splitmix32(seed: number): () => number {
 export const STREAM_SENSOR = 0x51e15001;
 export const STREAM_SWARM = 0x53574112;
 export const STREAM_ADAPTER = 0xada97e03;
+/** Extra stream for the action-margin null distribution. Does not move the three streams above. */
+export const STREAM_CALIB = 0xc411b004;
 
 /** Map any integer seed into a uint32 stream seed. Correction C5. */
 export function streamSeed(master: number, streamId: number): number {

@@ -1,9 +1,13 @@
 import { dot, l2 } from "./math";
-import { STREAM_ADAPTER, SeededRng, streamSeed } from "./rng";
+import { STREAM_ADAPTER, STREAM_CALIB, SeededRng, streamSeed } from "./rng";
 import { compensateGravity } from "./sensors";
 import { ACTION_NAMES, type ActionName, type ModalChannel } from "./types";
 
 export const DEFAULT_ACTION_MIN_MARGIN = 0.05;
+export const DEFAULT_MARGIN_QUANTILE = 0.99;
+export const DEFAULT_MARGIN_SAMPLE = 4000;
+
+const marginCache = new Map<string, { threshold: number; nullRate: number; sample: number[] }>();
 
 export type DecodeResult = {
   action: ActionName | "UNDECIDED";
@@ -44,15 +48,25 @@ export class SensorySemanticAdapter {
   private readonly wHaptic: Float64Array;
   readonly actionSpace: Record<ActionName, Float64Array>;
   readonly minMargin: number;
+  readonly marginQuantile: number;
+  readonly nullRate: number;
 
-  constructor(readonly targetDim: number, seed: number, minMargin = DEFAULT_ACTION_MIN_MARGIN) {
+  constructor(
+    readonly targetDim: number,
+    readonly seed: number,
+    minMargin: number | null = null,
+    marginQuantile = DEFAULT_MARGIN_QUANTILE,
+  ) {
     if (!Number.isInteger(targetDim) || targetDim <= 0) {
       throw new Error("Adapter targetDim must be a positive integer.");
     }
-    if (!Number.isFinite(minMargin) || minMargin < 0) {
+    if (minMargin !== null && (!Number.isFinite(minMargin) || minMargin < 0)) {
       throw new Error("Adapter minMargin must be finite and >= 0.");
     }
-    this.minMargin = minMargin;
+    if (!Number.isFinite(marginQuantile) || !(marginQuantile > 0 && marginQuantile <= 1)) {
+      throw new Error("Adapter marginQuantile must be in (0, 1].");
+    }
+    this.marginQuantile = marginQuantile;
     const rng = new SeededRng(streamSeed(seed, STREAM_ADAPTER));
     this.wVisual = this.fillNormal(rng, targetDim * 16, 0.1);
     this.wAuditory = this.fillNormal(rng, targetDim * 8, 0.1);
@@ -60,6 +74,11 @@ export class SensorySemanticAdapter {
     const space = {} as Record<ActionName, Float64Array>;
     for (const name of ACTION_NAMES) space[name] = this.unitGaussian(rng);
     this.actionSpace = space;
+    const calibrated = this.calibrateNullMargin(marginQuantile, DEFAULT_MARGIN_SAMPLE);
+    this.minMargin = minMargin === null ? calibrated.threshold : minMargin;
+    let above = 0;
+    for (const value of calibrated.sample) if (value >= this.minMargin) above += 1;
+    this.nullRate = above / calibrated.sample.length;
   }
 
   private fillNormal(rng: SeededRng, n: number, std: number): Float64Array {
@@ -75,6 +94,50 @@ export class SensorySemanticAdapter {
     if (n < 1e-12) throw new Error("Zero-norm action prototype.");
     for (let i = 0; i < v.length; i++) v[i] /= n;
     return v;
+  }
+
+  /** Cosine gap of a state against the nine action vectors. Independent of the threshold. */
+  marginOf(stateVector: ArrayLike<number>): number {
+    if (stateVector.length !== this.targetDim) {
+      throw new Error(`marginOf: state dim ${stateVector.length} != ${this.targetDim}`);
+    }
+    let best = -Infinity;
+    let runner = -Infinity;
+    for (const name of ACTION_NAMES) {
+      const c = dot(stateVector, this.actionSpace[name]);
+      if (c > best) {
+        runner = best;
+        best = c;
+      } else if (c > runner) {
+        runner = c;
+      }
+    }
+    return best - runner;
+  }
+
+  /**
+   * Empirical quantile of margins of random unit vectors on a private stream.
+   * Assumption: the null is isotropic on the sphere, so the threshold has a known false-action rate.
+   */
+  calibrateNullMargin(quantile = this.marginQuantile, n = DEFAULT_MARGIN_SAMPLE): {
+    threshold: number;
+    nullRate: number;
+    sample: number[];
+  } {
+    if (!Number.isInteger(n) || n < 2) throw new Error("calibrateNullMargin: n must be an integer >= 2.");
+    const key = `${this.seed}|${this.targetDim}|${quantile}|${n}`;
+    const cached = marginCache.get(key);
+    if (cached) return cached;
+    const rng = new SeededRng(streamSeed(this.seed, STREAM_CALIB));
+    const sample = new Array<number>(n);
+    for (let i = 0; i < n; i++) sample[i] = this.marginOf(this.unitGaussian(rng));
+    const sorted = sample.slice().sort((a, b) => a - b);
+    const threshold = sorted[Math.min(n - 1, Math.floor(quantile * n))];
+    let above = 0;
+    for (const value of sample) if (value >= threshold) above += 1;
+    const result = { threshold, nullRate: above / n, sample };
+    marginCache.set(key, result);
+    return result;
   }
 
   embedVisual(visualFeatures: ArrayLike<number>): ModalChannel {

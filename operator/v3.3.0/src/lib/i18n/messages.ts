@@ -38,6 +38,13 @@ export type Messages = {
   seed: string;
   agents: string;
   inversion: string;
+  gtCalm: string;
+  gtNote: string;
+  tolWarn: string;
+  tolCrit: string;
+  tolHead: string;
+  diversity: string;
+  usedMargin: string;
   run: string;
   running: string;
   checks: string;
@@ -144,6 +151,13 @@ const de: Messages = {
   seed: "Seed",
   agents: "Agenten",
   inversion: "Trägheitsinversion Agent 0",
+  gtCalm: "Ground Truth = Ruhe-Referenz",
+  gtNote: "Gleichverteilt ist ein willkürlicher Einheitsvektor. Ruhe-Referenz bedeutet Abweichung vom Ruhezustand (Umgebung 0.2, Rauschen 0.1, interner Stress 0), berechnet mit demselben Adapter. Das ist eine Annahme, keine gemessene Wahrheit.",
+  tolWarn: "Ab Toleranz {crit} löscht der Referee alle Konfidenzen.",
+  tolCrit: "Kritische Toleranz",
+  tolHead: "Headroom",
+  diversity: "Schwarmvielfalt",
+  usedMargin: "Margenschwelle",
   run: "Lauf",
   running: "Rechnet",
   checks: "8 Prüfungen",
@@ -240,7 +254,7 @@ const de: Messages = {
     interventions: "Interventionen",
   },
   csvAgent: "Agent,Gedämpft,Stress,d_pre,d_sphäre,Conf_vor,Conf_nach,Sonde,Gewinner",
-  csvStress: "Iteration,Rauschen,Umgebung,Intern,Schwelle,Interventionen,Gewinner,d_pre,d_post,Proxy,Conf_vor,Conf_nach,Aktion,Marge,Degeneriert",
+  csvStress: "Iteration,Rauschen,Umgebung,Intern,Schwelle,Interventionen,Gewinner,d_pre,d_post,Proxy,Conf_vor,Conf_nach,Aktion,Marge,Degeneriert,TolCrit,Headroom,Vielfalt",
   checks8: {
     1: { name: "Einheitssphäre", ok: "Ground Truth und Embeddings auf S^{dim} (||v||₂ = 1)." },
     2: { name: "Allostase", ok: "env 0.25 → {base}, env 0.32 → {emergency}." },
@@ -253,7 +267,7 @@ const de: Messages = {
   },
   notesText: {
     A1: "Zustandshashes nutzen kanonisches JSON (Komponenten auf 6 Nachkommastellen, half-away-from-zero) und SHA-256, gekürzt auf 16 Hex-Zeichen. Nicht Python-repr(list). Die Ketteneigenschaft ist intern vollständig.",
-    A2: "Zufall ist xoshiro128** plus Box-Muller. Drei unabhängige Streams (sensor, swarm, adapter) werden per SplitMix32 aus dem Master-Seed abgeleitet. Verträge: uniform auf [0,1), normal(mean, std). Nicht bit-identisch zu NumPy PCG64 oder CPython MT19937.",
+    A2: "Zufall ist xoshiro128** plus Box-Muller. Vier unabhängige Streams (sensor, swarm, adapter, calib) werden per SplitMix32 aus dem Master-Seed abgeleitet. Der Kalibrierstrom verschiebt die anderen nicht. Verträge: uniform auf [0,1), normal(mean, std). Nicht bit-identisch zu NumPy PCG64 oder CPython MT19937.",
     A3: "Die Uhr ist injizierbar. Diagnostik und der Boot-Lauf nutzen eine logische UTC-Uhr, damit die SHA-256-Lineage prozessgleich ist. Manuelle Läufe stempeln mit echter UTC-Zeit.",
     C1: "Salienz gewichtet mit dem Prior mal ||Wx+b|| vor der Projektion auf S^(d-1). Im PDF wird zuerst normiert und danach L2 gebildet; jede Modalität hat dann Energie 1, die Softmax kollabiert auf die konstanten Priors 1.0 / 0.8 / 1.2.",
     C2: "Sensorrauschen und interner Stress sind getrennte Argumente des Synthesizers. Die Tk-GUI übergibt internen Stress fälschlich als noise_level.",
@@ -265,10 +279,15 @@ const de: Messages = {
     C8: "Vor dem Haptik-Embedding wird [9.81, 0, 0, 0, 0, 0] abgezogen. Der rohe IMU-Vektor bleibt erhalten. Gemessen: Kosinus zwischen Umgebung 0.2 und 1.5 war 0.99996, nach der Kompensation im Eingaberaum 0.927 und im Embedding 0.937.",
     C9: "Der Triage-Score ist Prior mal log1p der Energie vor der Projektion. Das lineare Produkt aus C1 wurde zum One-Hot auf Haptik. Mit C8 und log1p bleibt die Mischung unter 0.9 und ändert sich mit der Umgebung.",
     C10: "Das Schwarmrauschen skaliert mit ||Basis|| / sqrt(d). Der erwartete Kosinus zur Basis ist 1/sqrt(1+(Stress·noiseScale)²). Vorher fiel Agent 1 bei Stress 1.0 auf Kosinus 0.45.",
-    C11: "Unter einer Kosinus-Marge von 0.05 heißt die Aktion UNDECIDED. Die neun Namen sind ein Platzhalter auf zufälligen Einheitsvektoren. Gemessen lag die Marge vorher bei 0.025.",
+    C11: "Unter einer Kosinus-Marge unter der Schwelle heißt die Aktion UNDECIDED. Die neun Namen sind ein Platzhalter. Seit C16 ist 0.05 nur noch ein expliziter Wert; der Default wird kalibriert.",
     C12: "T1 bis T8 prüfen Sonde, Skaleninvarianz, Haptik, Triage, Rausch-Kosinus, UNDECIDED und den Toleranz-Sweep. Die acht Masterprüfungen bleiben daneben bestehen.",
     C13: "Das JSON-Schema upo-run-1 trägt Config, Notiz-IDs, RNG und pro Lauf Marge, degenerate, Gewinner, tieCount. Interner Stress im Stresstest ist min(1.5, Rauschen·0.25) und steigt bis Iteration 49. Die Umgebung steht ab Iteration 44 bei 1.5, das ist das benannte Master-Plateau.",
     C14: "Die Python-Datei des PDF ist historische Spezifikation, nicht die ausführbare Referenz. math.cos auf einem NumPy-Array wirft TypeError, die GUI mischt internen Stress in noise_level, der HTML-Export ist numerisch nicht identisch. Der TypeScript-Kern ist die Referenz.",
+    C15: "Die kritische Toleranz ist das Maximum aus Vor-Konfidenz geteilt durch Sphärendistanz der zugelassenen Agenten. Ab diesem Wert ist der Lauf degeneriert. Messung am Standardlauf, Seed 42: 0.5676. Der Slider markiert sie.",
+    C16: "Ohne gesetzte Marge gilt das 99. Perzentil der Nullverteilung auf einem eigenen Zufallsstrom. Messung Seed 42: Schwelle 0.0916, Anteil darüber 0.0103 bei 20000 unabhängigen Ziehungen. Die feste 0.05 wird dort von 0.1177 der Zustände erreicht.",
+    C17: "Optional ist die Ground Truth die Triage-Richtung des Ruhe-Szenarios, mit demselben Adapter und ohne Schwarm. Das ist eine benannte Annahme. Messung Seed 42, ohne Sonde: Ruhe 0.4310, Stresstest 0.4490 auf 1.2454, Proxy-Spanne 0.4651.",
+    C18: "Die Schwarmvielfalt ist 1 minus den mittleren paarweisen Kosinus ohne Sonde. Sie ändert die Entscheidung nicht. Standardlauf: 0.1600. Bei Stress 0 ist sie 0, weil das Rauschen verschwindet. Isoliert bei Stress 1: 0.4941.",
+    C19: "Fremdes JSON wird abgewiesen, ohne zu werfen. Die SHA-256-Kette beweist eine Änderung nur zusammen mit einem außerhalb gespeicherten Head-Hash. Der Replay prüft Determinismus, nicht Echtheit.",
   },
 };
 
@@ -287,6 +306,13 @@ const en: Messages = {
   seed: "Seed",
   agents: "Agents",
   inversion: "Agent 0 inertia inversion",
+  gtCalm: "Ground truth = rest reference",
+  gtNote: "Uniform is an arbitrary unit vector. Rest reference means deviation from rest (environment 0.2, noise 0.1, internal stress 0), built with the same adapter. That is an assumption, not a measured truth.",
+  tolWarn: "At tolerance {crit} the referee wipes every confidence.",
+  tolCrit: "Critical tolerance",
+  tolHead: "Headroom",
+  diversity: "Swarm diversity",
+  usedMargin: "Margin threshold",
   run: "Run",
   running: "Computing",
   checks: "8 checks",
@@ -383,7 +409,7 @@ const en: Messages = {
     interventions: "Interventions",
   },
   csvAgent: "Agent,Damped,Stress,d_pre,d_sphere,Conf_before,Conf_after,Probe,Winner",
-  csvStress: "Iteration,Noise,Environment,Internal,Threshold,Interventions,Winner,d_pre,d_post,Proxy,Conf_before,Conf_after,Action,Margin,Degenerate",
+  csvStress: "Iteration,Noise,Environment,Internal,Threshold,Interventions,Winner,d_pre,d_post,Proxy,Conf_before,Conf_after,Action,Margin,Degenerate,TolCrit,Headroom,Diversity",
   checks8: {
     1: { name: "Unit sphere", ok: "Ground truth and embeddings on S^{dim} (||v||₂ = 1)." },
     2: { name: "Allostasis", ok: "env 0.25 → {base}, env 0.32 → {emergency}." },
@@ -396,7 +422,7 @@ const en: Messages = {
   },
   notesText: {
     A1: "State hashes use canonical JSON (components to 6 decimal places, half-away-from-zero) and SHA-256, truncated to 16 hex characters. Not Python repr(list). The chain property is complete inside this kernel.",
-    A2: "Randomness is xoshiro128** plus Box-Muller. Three independent streams (sensor, swarm, adapter) are derived from the master seed with SplitMix32. Contracts: uniform on [0,1), normal(mean, std). Not bit-identical to NumPy PCG64 or CPython MT19937.",
+    A2: "Randomness is xoshiro128** plus Box-Muller. Four independent streams (sensor, swarm, adapter, calib) are derived from the master seed with SplitMix32. The calibration stream does not move the others. Contracts: uniform on [0,1), normal(mean, std). Not bit-identical to NumPy PCG64 or CPython MT19937.",
     A3: "The clock is injectable. Diagnostics and the boot run use a logical UTC clock so the SHA-256 lineage matches across processes. Manual runs stamp real UTC.",
     C1: "Salience weights the prior times ||Wx+b|| before the projection onto S^(d-1). The PDF normalizes first and then takes L2, so every modality has energy 1 and the softmax collapses onto the constant priors 1.0 / 0.8 / 1.2.",
     C2: "Sensor noise and internal stress are separate arguments of the synthesizer. The Tk GUI wrongly passes internal stress as noise_level.",
@@ -408,10 +434,15 @@ const en: Messages = {
     C8: "The haptic embedding subtracts [9.81, 0, 0, 0, 0, 0]. The raw IMU vector is kept. Measured: cosine between environment 0.2 and 1.5 was 0.99996; after compensation it is 0.927 in input space and 0.937 in the embedding.",
     C9: "The triage score is prior times log1p of the pre-projection energy. The linear product from C1 became one-hot on haptics. With C8 and log1p the mixture stays under 0.9 and moves with the environment.",
     C10: "Swarm noise scales with ||base|| / sqrt(d). The expected cosine to the base is 1/sqrt(1+(stress·noiseScale)²). Agent 1 used to fall to cosine 0.45 at stress 1.0.",
-    C11: "Below a cosine margin of 0.05 the action is UNDECIDED. The nine names are a placeholder on random unit vectors. The earlier margin measured 0.025.",
+    C11: "Below the cosine-margin threshold the action is UNDECIDED. The nine names are a placeholder. Since C16, 0.05 is only an explicit value; the default is calibrated.",
     C12: "T1 through T8 check the probe, scale invariance, haptics, triage, noise cosine, UNDECIDED, and the tolerance sweep. The eight master checks stay beside them.",
     C13: "JSON schema upo-run-1 carries the config, note ids, the RNG id, and per run the margin, degenerate flag, winner, and tie count. Stress-test internal stress is min(1.5, noise·0.25) and rises through iteration 49. Environment stays at 1.5 from iteration 44; that cap is the named master plateau.",
     C14: "The PDF Python file is a historical specification, not the executable reference. math.cos on a NumPy array raises TypeError, the GUI feeds internal stress into noise_level, and the HTML export is not numerically identical. The TypeScript kernel is the reference.",
+    C15: "Critical tolerance is the maximum of pre-confidence divided by sphere distance over eligible agents. At that value the run is degenerate. Measured on the standard run, seed 42: 0.5676. The slider marks it.",
+    C16: "With no explicit margin, the threshold is the 99th percentile of a null distribution on its own random stream. Measured at seed 42: threshold 0.0916, and 0.0103 of 20000 independent draws lie at or above it. The fixed 0.05 is reached by 0.1177 of that draw.",
+    C17: "Ground truth can be the triage direction of the rest scenario, using the same adapter and no swarm. That is a named assumption. Measured at seed 42, probe excluded: rest 0.4310, stress test 0.4490 to 1.2454, proxy span 0.4651.",
+    C18: "Swarm diversity is 1 minus the mean pairwise cosine without the probe. It does not change the decision. Standard run: 0.1600. At stress 0 it is 0, because the noise vanishes. Isolated at stress 1: 0.4941.",
+    C19: "Foreign JSON is rejected without throwing. The SHA-256 chain shows a change only together with a head hash stored outside the browser. Replay checks determinism, not authenticity.",
   },
 };
 
@@ -430,6 +461,13 @@ const fr: Messages = {
   seed: "Graine",
   agents: "Agents",
   inversion: "Inversion d'inertie, agent 0",
+  gtCalm: "Vérité terrain = référence de repos",
+  gtNote: "Uniforme est un vecteur unitaire arbitraire. La référence de repos signifie l'écart au repos (environnement 0.2, bruit 0.1, stress interne 0), calculé avec le même adaptateur. C'est une hypothèse, pas une vérité mesurée.",
+  tolWarn: "À partir de la tolérance {crit}, le referee efface toutes les confiances.",
+  tolCrit: "Tolérance critique",
+  tolHead: "Marge de tolérance",
+  diversity: "Diversité de l'essaim",
+  usedMargin: "Seuil de marge",
   run: "Lancer",
   running: "Calcul",
   checks: "8 contrôles",
@@ -526,7 +564,7 @@ const fr: Messages = {
     interventions: "Interventions",
   },
   csvAgent: "Agent,Amorti,Stress,d_pre,d_sphere,Conf_avant,Conf_apres,Sonde,Gagnant",
-  csvStress: "Iteration,Bruit,Environnement,Interne,Seuil,Interventions,Gagnant,d_pre,d_post,Proxy,Conf_avant,Conf_apres,Action,Marge,Degeneres",
+  csvStress: "Iteration,Bruit,Environnement,Interne,Seuil,Interventions,Gagnant,d_pre,d_post,Proxy,Conf_avant,Conf_apres,Action,Marge,Degeneres,TolCrit,Headroom,Diversite",
   checks8: {
     1: { name: "Sphère unité", ok: "Vérité terrain et plongements sur S^{dim} (||v||₂ = 1)." },
     2: { name: "Allostasie", ok: "env 0.25 → {base}, env 0.32 → {emergency}." },
@@ -539,7 +577,7 @@ const fr: Messages = {
   },
   notesText: {
     A1: "Les hachages d'état utilisent un JSON canonique (composantes à 6 décimales, half-away-from-zero) et SHA-256, tronqué à 16 caractères hexadécimaux. Pas le repr(list) de Python. La propriété de chaîne est complète dans ce noyau.",
-    A2: "L'aléa est xoshiro128** plus Box-Muller. Trois flux indépendants (sensor, swarm, adapter) sont dérivés de la graine maîtresse par SplitMix32. Contrats : uniforme sur [0,1), normal(mean, std). Pas identique bit à bit à NumPy PCG64 ni au MT19937 de CPython.",
+    A2: "L'aléa est xoshiro128** plus Box-Muller. Quatre flux indépendants (sensor, swarm, adapter, calib) sont dérivés de la graine maîtresse par SplitMix32. Le flux de calibration ne déplace pas les autres. Contrats : uniforme sur [0,1), normal(mean, std). Pas identique bit à bit à NumPy PCG64 ni au MT19937 de CPython.",
     A3: "L'horloge est injectable. Le diagnostic et le run de démarrage utilisent une horloge UTC logique, afin que la lignée SHA-256 soit identique d'un processus à l'autre. Les runs manuels portent l'heure UTC réelle.",
     C1: "La saillance pondère le prior par ||Wx+b|| avant la projection sur S^(d-1). Le PDF normalise d'abord puis calcule L2 : chaque modalité a alors une énergie 1, et le softmax s'effondre sur les priors constants 1.0 / 0.8 / 1.2.",
     C2: "Le bruit capteur et le stress interne sont des arguments distincts du synthétiseur. L'interface Tk passe à tort le stress interne comme noise_level.",
@@ -551,10 +589,15 @@ const fr: Messages = {
     C8: "L'embedding haptique soustrait [9.81, 0, 0, 0, 0, 0]. Le vecteur IMU brut est conservé. Mesure : le cosinus entre environnement 0.2 et 1.5 valait 0.99996 ; après compensation, 0.927 dans l'espace d'entrée et 0.937 dans l'embedding.",
     C9: "Le score de triage est le prior fois log1p de l'énergie avant projection. Le produit linéaire de C1 devenait un one-hot haptique. Avec C8 et log1p, le mélange reste sous 0.9 et bouge avec l'environnement.",
     C10: "Le bruit de l'essaim est à l'échelle de ||base|| / sqrt(d). Le cosinus attendu vers la base est 1/sqrt(1+(stress·noiseScale)²). L'agent 1 tombait à un cosinus de 0.45 pour un stress de 1.0.",
-    C11: "Sous une marge de cosinus de 0.05, l'action est UNDECIDED. Les neuf noms sont un substitut sur des vecteurs unitaires aléatoires. La marge mesurée avant était 0.025.",
+    C11: "Sous le seuil de marge en cosinus, l'action est UNDECIDED. Les neuf noms sont un substitut. Depuis C16, 0.05 n'est plus qu'une valeur explicite ; le défaut est calibré.",
     C12: "T1 à T8 vérifient la sonde, l'invariance d'échelle, l'haptique, le triage, le cosinus du bruit, UNDECIDED et le balayage de tolérance. Les huit contrôles maîtres restent à côté.",
     C13: "Le schéma JSON upo-run-1 porte la config, les identifiants de notes, le RNG, et par run la marge, le drapeau degenerate, le gagnant et tieCount. Le stress interne du test est min(1.5, bruit·0.25) et monte jusqu'à l'itération 49. L'environnement reste à 1.5 dès l'itération 44 : c'est le plateau maître nommé.",
     C14: "Le fichier Python du PDF est une spécification historique, pas la référence exécutable. math.cos sur un tableau NumPy lève TypeError, l'interface passe le stress interne comme noise_level, et l'export HTML n'est pas identique numériquement. Le noyau TypeScript est la référence.",
+    C15: "La tolérance critique est le maximum de la confiance avant division par la distance sphérique des agents éligibles. À cette valeur le run est dégénéré. Mesure du run standard, graine 42 : 0.5676. Le curseur la marque.",
+    C16: "Sans marge explicite, le seuil est le 99e percentile d'une distribution nulle sur son propre flux. Mesure, graine 42 : seuil 0.0916, et 0.0103 de 20000 tirages indépendants sont au-dessus. Le 0.05 fixe est atteint par 0.1177 de ce tirage.",
+    C17: "La vérité terrain peut être la direction de triage du scénario de repos, avec le même adaptateur et sans essaim. C'est une hypothèse nommée. Mesure, graine 42, sonde exclue : repos 0.4310, stress 0.4490 à 1.2454, étendue du proxy 0.4651.",
+    C18: "La diversité de l'essaim est 1 moins le cosinus moyen par paires, sans la sonde. Elle ne change pas la décision. Run standard : 0.1600. À stress 0 elle vaut 0, car le bruit disparaît. Isolée à stress 1 : 0.4941.",
+    C19: "Un JSON étranger est rejeté sans exception. La chaîne SHA-256 ne prouve un changement qu'avec un hash de tête conservé hors du navigateur. Le replay teste le déterminisme, pas l'authenticité.",
   },
 };
 
@@ -573,6 +616,13 @@ const it: Messages = {
   seed: "Seed",
   agents: "Agenti",
   inversion: "Inversione d'inerzia, agente 0",
+  gtCalm: "Ground truth = riferimento di quiete",
+  gtNote: "Uniforme è un vettore unitario arbitrario. Il riferimento di quiete è lo scostamento dalla quiete (ambiente 0.2, rumore 0.1, stress interno 0), calcolato con lo stesso adapter. È un'assunzione, non una verità misurata.",
+  tolWarn: "Dalla tolleranza {crit} il referee azzera tutte le confidenze.",
+  tolCrit: "Tolleranza critica",
+  tolHead: "Headroom",
+  diversity: "Diversità dello sciame",
+  usedMargin: "Soglia di margine",
   run: "Esegui",
   running: "Calcolo",
   checks: "8 controlli",
@@ -669,7 +719,7 @@ const it: Messages = {
     interventions: "Interventi",
   },
   csvAgent: "Agente,Smorzato,Stress,d_pre,d_sfera,Conf_prima,Conf_dopo,Sonda,Vincitore",
-  csvStress: "Iterazione,Rumore,Ambiente,Interno,Soglia,Interventi,Vincitore,d_pre,d_post,Proxy,Conf_prima,Conf_dopo,Azione,Margine,Degenerato",
+  csvStress: "Iterazione,Rumore,Ambiente,Interno,Soglia,Interventi,Vincitore,d_pre,d_post,Proxy,Conf_prima,Conf_dopo,Azione,Margine,Degenerato,TolCrit,Headroom,Diversita",
   checks8: {
     1: { name: "Sfera unitaria", ok: "Ground truth e embedding su S^{dim} (||v||₂ = 1)." },
     2: { name: "Allostasi", ok: "env 0.25 → {base}, env 0.32 → {emergency}." },
@@ -682,7 +732,7 @@ const it: Messages = {
   },
   notesText: {
     A1: "Gli hash di stato usano JSON canonico (componenti a 6 decimali, half-away-from-zero) e SHA-256, troncato a 16 caratteri esadecimali. Non il repr(list) di Python. La proprietà di catena è completa in questo kernel.",
-    A2: "Il caso è xoshiro128** più Box-Muller. Tre flussi indipendenti (sensor, swarm, adapter) derivano dal seed maestro tramite SplitMix32. Contratti: uniforme su [0,1), normal(mean, std). Non identico bit a bit a NumPy PCG64 né al MT19937 di CPython.",
+    A2: "Il caso è xoshiro128** più Box-Muller. Quattro flussi indipendenti (sensor, swarm, adapter, calib) derivano dal seed maestro tramite SplitMix32. Il flusso di calibrazione non sposta gli altri. Contratti: uniforme su [0,1), normal(mean, std). Non identico bit a bit a NumPy PCG64 né al MT19937 di CPython.",
     A3: "L'orologio è iniettabile. Diagnostica e run di avvio usano un orologio UTC logico, così la lineage SHA-256 coincide tra i processi. I run manuali timbrano l'UTC reale.",
     C1: "La salienza pesa il prior per ||Wx+b|| prima della proiezione su S^(d-1). Il PDF normalizza prima e poi calcola L2: ogni modalità ha energia 1 e la softmax collassa sui prior costanti 1.0 / 0.8 / 1.2.",
     C2: "Rumore dei sensori e stress interno sono argomenti distinti del sintetizzatore. La GUI Tk passa erroneamente lo stress interno come noise_level.",
@@ -694,10 +744,15 @@ const it: Messages = {
     C8: "L'embedding aptico sottrae [9.81, 0, 0, 0, 0, 0]. Il vettore IMU grezzo resta. Misura: il coseno tra ambiente 0.2 e 1.5 era 0.99996; dopo la compensazione è 0.927 nello spazio di ingresso e 0.937 nell'embedding.",
     C9: "Il punteggio di triage è il prior per log1p dell'energia prima della proiezione. Il prodotto lineare di C1 diventava one-hot sull'aptica. Con C8 e log1p la miscela resta sotto 0.9 e si muove con l'ambiente.",
     C10: "Il rumore dello sciame scala con ||base|| / sqrt(d). Il coseno atteso verso la base è 1/sqrt(1+(stress·noiseScale)²). L'agente 1 scendeva a coseno 0.45 con stress 1.0.",
-    C11: "Sotto un margine di coseno di 0.05 l'azione è UNDECIDED. I nove nomi sono un segnaposto su vettori unitari casuali. Il margine misurato prima era 0.025.",
+    C11: "Sotto la soglia del margine di coseno l'azione è UNDECIDED. I nove nomi sono un segnaposto. Da C16, 0.05 è solo un valore esplicito; il default è calibrato.",
     C12: "T1–T8 controllano la sonda, l'invarianza di scala, l'aptica, il triage, il coseno del rumore, UNDECIDED e lo sweep di tolleranza. Gli otto controlli master restano accanto.",
     C13: "Lo schema JSON upo-run-1 porta config, id delle note, RNG, e per run margine, flag degenerate, vincitore e tieCount. Lo stress interno del test è min(1.5, rumore·0.25) e sale fino all'iterazione 49. L'ambiente resta a 1.5 dall'iterazione 44: è il plateau master dichiarato.",
     C14: "Il file Python del PDF è una specifica storica, non il riferimento eseguibile. math.cos su un array NumPy lancia TypeError, la GUI passa lo stress interno come noise_level, e l'export HTML non è numericamente identico. Il kernel TypeScript è il riferimento.",
+    C15: "La tolleranza critica è il massimo di confidenza prima diviso distanza sferica degli agenti ammessi. A quel valore il run è degenerato. Misura del run standard, seed 42: 0.5676. Lo slider la segna.",
+    C16: "Senza margine esplicito, la soglia è il 99° percentile di una distribuzione nulla su un flusso proprio. Misura, seed 42: soglia 0.0916, e 0.0103 di 20000 estrazioni indipendenti sta sopra. Lo 0.05 fisso è raggiunto da 0.1177 di quel campione.",
+    C17: "La ground truth può essere la direzione di triage dello scenario di quiete, con lo stesso adapter e senza sciame. È un'assunzione nominata. Misura, seed 42, sonda esclusa: quiete 0.4310, stress 0.4490 fino a 1.2454, ampiezza del proxy 0.4651.",
+    C18: "La diversità dello sciame è 1 meno il coseno medio a coppie, senza la sonda. Non cambia la decisione. Run standard: 0.1600. A stress 0 vale 0, perché il rumore sparisce. Isolata a stress 1: 0.4941.",
+    C19: "Un JSON estraneo viene rifiutato senza eccezioni. La catena SHA-256 prova una modifica solo insieme a un hash di testa tenuto fuori dal browser. Il replay verifica il determinismo, non l'autenticità.",
   },
 };
 

@@ -2,16 +2,17 @@ import { SensorySemanticAdapter } from "./adapter";
 import { createUPOConfig } from "./config";
 import { runAllChecks } from "./diagnostics";
 import { entryHash, logicalClock, MemoryManifold } from "./manifold";
-import { buildUnitGroundTruth, cosine, euclidean, l2, linspace, softmax, topologyPoint } from "./math";
+import { buildUnitGroundTruth, cosine, euclidean, l2, linspace, normalize, softmax, topologyPoint } from "./math";
 import { UnifiedProcessOntology } from "./ontology";
 import { HostileReferees } from "./referees";
 import { DynamicStressRegulator } from "./regulator";
-import { SeededRng, streamSeed } from "./rng";
+import { STREAM_CALIB, SeededRng, streamSeed } from "./rng";
+import { CALM } from "./scenario";
 import { DeterministicSensorSynthesizer } from "./sensors";
 import { sha256Hex } from "./sha256";
-import { DEFAULT_RUN, executeSingle, reproduceExportedRun, run50IterationStressTest, runDampingStudy, runJson, runMultiSeed } from "./studies";
+import { DEFAULT_RUN, executeSingle, reproduceExportedRun, run50IterationStressTest, runDampingStudy, runJson, runMultiSeed, stressCsv } from "./studies";
 import type { RunParams } from "./studies";
-import { ParasympatheticSwarm } from "./swarm";
+import { ParasympatheticSwarm, swarmDiversity } from "./swarm";
 import { ContextRevisor, SensoryTriageAgent } from "./triage";
 import { ACTION_NAMES, GENESIS_ANCHOR } from "./types";
 
@@ -495,8 +496,127 @@ function block5(): void {
   );
 }
 
+function unitDraw(rng: SeededRng, dim: number): number[] {
+  const raw = new Array<number>(dim);
+  for (let i = 0; i < dim; i++) raw[i] = rng.normal();
+  return normalize(raw);
+}
+
+function block6(): void {
+  const standard = metricsOf(DEFAULT_RUN);
+  assert(
+    standard.toleranceCritical >= 0.55 && standard.toleranceCritical <= 0.6,
+    `T11 standard crit ${standard.toleranceCritical}`,
+  );
+  for (let step = 0; step <= 30; step++) {
+    const tolerance = (step * 1.5) / 30;
+    const row = metricsOf({ ...DEFAULT_RUN, tolerance, seed: 42 });
+    const predicted = tolerance >= row.toleranceCritical - 1e-9;
+    assert(
+      row.degenerate === predicted,
+      `T11 tol=${tolerance} deg=${row.degenerate} crit=${row.toleranceCritical}`,
+    );
+  }
+
+  const calibrated = new SensorySemanticAdapter(512, 42);
+  assert(Math.abs(calibrated.minMargin - 0.09) < 0.01, `T10 threshold ${calibrated.minMargin}`);
+  const fixed = metricsOf({ ...DEFAULT_RUN, actionMinMargin: 0.05 });
+  const auto = metricsOf(DEFAULT_RUN);
+  assert(fixed.winnerIndex === auto.winnerIndex, `T10 winner ${fixed.winnerIndex} vs ${auto.winnerIndex}`);
+  assert(
+    fixed.postConfidences.every((value, i) => value === auto.postConfidences[i]),
+    "T10 confidences moved",
+  );
+  assert(fixed.distPostCollapse === auto.distPostCollapse, "T10 distance moved");
+  const rng = new SeededRng(streamSeed(42, STREAM_CALIB));
+  for (let i = 0; i < 4000; i++) unitDraw(rng, 512);
+  let over = 0;
+  let over05 = 0;
+  const draws = 20000;
+  for (let i = 0; i < draws; i++) {
+    const margin = calibrated.marginOf(unitDraw(rng, 512));
+    if (margin >= calibrated.minMargin) over += 1;
+    if (margin >= 0.05) over05 += 1;
+  }
+  assert(over / draws <= 0.02, `T10 null rate ${over / draws}`);
+
+  const calm = metricsOf({
+    ...DEFAULT_RUN,
+    envStress: CALM.env,
+    noiseLevel: CALM.noise,
+    internalStress: CALM.internal,
+    seed: 42,
+    tolerance: 0.25,
+    groundTruthMode: "calm",
+  });
+  const eligible = calm.sphereDistances.filter((_, i) => !calm.inversionProbe[i]);
+  const meanSphere = eligible.reduce((sum, value) => sum + value, 0) / eligible.length;
+  assert(meanSphere < 0.6, `T9 mean sphere ${meanSphere}`);
+  const calmStress = run50IterationStressTest(42, "calm");
+  const proxies = calmStress.records.map((row) => row.stabilityProxy);
+  const span = Math.max(...proxies) - Math.min(...proxies);
+  assert(span > 0.3, `T9 proxy span ${span} from ${Math.min(...proxies)} to ${Math.max(...proxies)}`);
+  assert(calmStress.records[0].meanSphere < 0.6, `T9 start ${calmStress.records[0].meanSphere}`);
+  assert(
+    calmStress.records[49].meanSphere > calmStress.records[0].meanSphere,
+    `T9 growth ${calmStress.records[0].meanSphere} -> ${calmStress.records[49].meanSphere}`,
+  );
+  assert(calmStress.records.every((row) => row.degenerate === false), "T9 degenerate");
+  const isolated = [0, 0.2, 0.5, 1].map((stressValue) => {
+    const cfg = createUPOConfig({
+      seed: 42,
+      numAgents: 20,
+      latentDim: 512,
+      stressIncrement: 0,
+      noiseScale: 1,
+      enableInertiaInversion: true,
+      maxLogSize: 64,
+    });
+    const manifold = new MemoryManifold(cfg, logicalClock("2026-08-01T00:00:00.000Z"));
+    const swarm = new ParasympatheticSwarm(cfg).generateAndDampen(buildUnitGroundTruth(512), stressValue, 10, manifold);
+    return swarmDiversity(
+      swarm.paths.map((path) => path.vector),
+      swarm.paths.map((path) => path.isInversionProbe === true),
+    );
+  });
+  assert(Math.abs(isolated[0]) < 1e-12, `T diversity stress0 ${isolated[0]}`);
+  assert(isolated[0] < isolated[1] && isolated[1] < isolated[2] && isolated[2] < isolated[3], `T diversity curve ${isolated.join(",")}`);
+  assert(isolated[2] > 0.15 && isolated[2] < 0.25, `T diversity at 0.5 ${isolated[2]}`);
+  assert(isolated[3] > 0.4 && isolated[3] < 0.6, `T diversity at 1 ${isolated[3]}`);
+  assert(
+    standard.swarmDiversity > 0.15 && standard.swarmDiversity < 0.17,
+    `T diversity standard ${standard.swarmDiversity}`,
+  );
+  const uniformStress = run50IterationStressTest(42);
+  assert(stressCsv(uniformStress.records).includes("SwarmDiversity"), "stress csv missing diversity");
+  assert(
+    uniformStress.records.every((row, i) => row.winnerAgent === run50IterationStressTest(42).records[i].winnerAgent),
+    "diversity changed a later stress winner",
+  );
+
+  assert(reproduceExportedRun("not-json").detail === "invalid json", "M14 invalid");
+  assert(reproduceExportedRun("x".repeat(1_000_001)).detail === "too large", "M14 size");
+  assert(reproduceExportedRun("{}").ok === false, "M14 empty object");
+  assert(reproduceExportedRun('{"schemaVersion":"upo-run-1"}').detail === "schema violation", "M14 partial");
+  const stamped = executeSingle({ ...DEFAULT_RUN, logicalOrigin: "2026-07-01T00:00:00.000Z" });
+  const stampedReplay = reproduceExportedRun(runJson(stamped));
+  assert(stampedReplay.ok, `M14 logical replay ${stampedReplay.detail}`);
+  const tampered = JSON.parse(runJson(stamped)) as { headHash: string };
+  tampered.headHash = "deadbeef";
+  assert(reproduceExportedRun(JSON.stringify(tampered)).detail === "head hash", "M14 tampered head");
+
+  console.log("[OK] Block 6: T9–T11, diversity, import guard.");
+  console.log(
+    `  T11 crit=${standard.toleranceCritical.toFixed(4)} T10 margin=${calibrated.minMargin.toFixed(4)} null=${(over / draws).toFixed(4)} over05=${(over05 / draws).toFixed(4)} inSample=${calibrated.nullRate.toFixed(4)}`,
+  );
+  console.log(
+    `  T9 calm=${meanSphere.toFixed(4)} sphere0=${calmStress.records[0].meanSphere.toFixed(4)} sphere49=${calmStress.records[49].meanSphere.toFixed(4)} proxySpan=${span.toFixed(4)} proxy=${Math.min(...proxies).toFixed(4)}..${Math.max(...proxies).toFixed(4)} diversity=${standard.swarmDiversity.toFixed(4)} isolated=${isolated.map((v) => v.toFixed(4)).join(",")}`,
+  );
+}
+
 block1();
 block2();
 block3();
 block4();
 block5();
+block6();

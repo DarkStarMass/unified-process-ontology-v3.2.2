@@ -93,6 +93,7 @@ function sanitize(partial: Partial<Controls>, base: Controls): Controls {
       typeof partial.enableInertiaInversion === "boolean"
         ? partial.enableInertiaInversion
         : base.enableInertiaInversion,
+    groundTruthMode: partial.groundTruthMode === "calm" ? "calm" : "uniform",
     maxLogSize: base.maxLogSize,
   };
 }
@@ -205,7 +206,16 @@ export function UpoConsole() {
             <FieldSlider label={t.internal} value={controls.internalStress} min={0} max={1} step={0.01} display={n(controls.internalStress, 2)} onChange={(internalStress) => setControls((c) => ({ ...c, internalStress }))} />
             <FieldSlider label={t.noise} value={controls.noiseLevel} min={0} max={4.5} step={0.01} display={n(controls.noiseLevel, 2)} onChange={(noiseLevel) => setControls((c) => ({ ...c, noiseLevel }))} />
             <FieldSlider label={t.damping} value={controls.dampingFactor} min={0.05} max={0.99} step={0.01} display={n(controls.dampingFactor, 2)} onChange={(dampingFactor) => setControls((c) => ({ ...c, dampingFactor }))} />
-            <FieldSlider label={t.tolerance} value={controls.tolerance} min={0} max={1.5} step={0.01} display={n(controls.tolerance, 2)} onChange={(tolerance) => setControls((c) => ({ ...c, tolerance }))} />
+            <FieldSlider
+              label={t.tolerance}
+              value={controls.tolerance}
+              min={0}
+              max={1.5}
+              step={0.01}
+              display={n(controls.tolerance, 2)}
+              mark={run?.metrics.toleranceCritical}
+              onChange={(tolerance) => setControls((c) => ({ ...c, tolerance }))}
+            />
             <FieldSlider label={t.increment} value={controls.stressIncrement} min={0} max={0.2} step={0.01} display={n(controls.stressIncrement, 2)} onChange={(stressIncrement) => setControls((c) => ({ ...c, stressIncrement }))} />
             <label className="flex flex-col gap-2 text-sm">
               <span className="font-medium">{t.seed}</span>
@@ -241,7 +251,7 @@ export function UpoConsole() {
               />
             </label>
           </div>
-          <div className="mt-2 max-w-xs">
+          <div className="mt-2 grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2">
             <FieldSwitch
               label={t.inversion}
               checked={controls.enableInertiaInversion}
@@ -253,7 +263,18 @@ export function UpoConsole() {
                 }))
               }
             />
+            <FieldSwitch
+              label={t.gtCalm}
+              checked={controls.groundTruthMode === "calm"}
+              onChange={(on) => setControls((c) => ({ ...c, groundTruthMode: on ? "calm" : "uniform" }))}
+            />
           </div>
+          <p className="mt-2 max-w-3xl text-xs leading-normal text-muted">{t.gtNote}</p>
+          {run && run.metrics.toleranceCritical - controls.tolerance < 0.1 ? (
+            <p className="mt-2 text-xs leading-normal text-danger" role="status">
+              {fill(t.tolWarn, { crit: n(run.metrics.toleranceCritical, 2) })}
+            </p>
+          ) : null}
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <Button disabled={busy !== null || !run} onClick={() => void work("run", () => { setRestored(false); setRun(executeSingle(controls)); })}>
               <Play className="size-4" aria-hidden="true" />
@@ -339,13 +360,22 @@ export function UpoConsole() {
                 <p className="-mt-1 mb-2 text-right text-xs leading-normal text-muted">{gloss(t, run.metrics.decodedAction)}</p>
                 <Metric label={t.margin} value={`${n(run.metrics.actionMargin, 4)}  →  ${run.metrics.actionRunnerUp || "—"}`} />
                 <Metric label={t.sphere} value={n(run.metrics.sphereDistances[run.metrics.winnerIndex], 4)} />
+                <Metric label={t.tolCrit} value={n(run.metrics.toleranceCritical, 4)} />
+                <Metric label={t.tolHead} value={n(run.metrics.toleranceCritical - controls.tolerance, 4)} />
+                <Metric label={t.diversity} value={n(run.metrics.swarmDiversity, 4)} />
+                <Metric
+                  label={t.usedMargin}
+                  value={`${n(run.metrics.actionMinMargin, 4)}  q ${n(run.metrics.actionMarginQuantile, 2)}  p ${n(run.metrics.actionNullRate, 4)}`}
+                />
                 <p className="mb-2 text-xs leading-normal text-muted">{t.actionPlaceholder}</p>
                 <Metric label={t.lineage} value={run.metrics.finalState.lineage.slice(0, 16)} />
                 <Metric
                   label={t.ortho}
                   value={`${n(run.orthogonality.min, 3)} / ${n(run.orthogonality.max, 3)} / ${n(run.orthogonality.mean, 4)}`}
                 />
-                {run.metrics.degenerate ? <p className="mt-3 text-sm text-danger">{t.degenerate}</p> : null}
+                {controls.tolerance >= run.metrics.toleranceCritical - 1e-9 ? (
+                  <p className="mt-3 text-sm text-danger">{t.degenerate}</p>
+                ) : null}
                 <div className="mt-4 grid grid-cols-5 gap-1.5 sm:grid-cols-10">
                   {run.metrics.dampedFlags.map((damped, i) => (
                     <div

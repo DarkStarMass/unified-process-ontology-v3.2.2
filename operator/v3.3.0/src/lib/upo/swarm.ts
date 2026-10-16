@@ -1,4 +1,4 @@
-import { cosine, l2 } from "./math";
+import { cosine, dot, l2, normalize } from "./math";
 import type { MemoryManifold } from "./manifold";
 import { STREAM_SWARM, SeededRng, streamSeed } from "./rng";
 import { LayerType, type State, type UPOConfig } from "./types";
@@ -10,6 +10,24 @@ export type SwarmResult = {
   dampedFlags: boolean[];
   agentStress: number[];
 };
+
+/** 1 minus the mean pairwise cosine of agents that are not the inversion probe. */
+export function swarmDiversity(vectors: readonly (readonly number[])[], probe: readonly boolean[]): number {
+  const vs: number[][] = [];
+  for (let i = 0; i < vectors.length; i++) {
+    if (probe[i]) continue;
+    vs.push(normalize(vectors[i]));
+  }
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < vs.length; i++) {
+    for (let j = i + 1; j < vs.length; j++) {
+      sum += dot(vs[i], vs[j]);
+      n += 1;
+    }
+  }
+  return n === 0 ? 0 : 1 - sum / n;
+}
 
 export class ParasympatheticSwarm {
   private readonly rng: SeededRng;

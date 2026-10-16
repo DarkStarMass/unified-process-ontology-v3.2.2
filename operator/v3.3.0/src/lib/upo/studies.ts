@@ -1,8 +1,9 @@
 import { SensorySemanticAdapter } from "./adapter";
 import { KERNEL_NOTES, KERNEL_VERSION } from "./assumptions";
 import { createUPOConfig, type UPOConfigInput } from "./config";
-import { logicalClock, utcNow } from "./manifold";
+import { entryHash, logicalClock, utcNow } from "./manifold";
 import { UnifiedProcessOntology } from "./ontology";
+import { CALM, groundTruthFromScenario, type GroundTruthMode, type Scenario } from "./scenario";
 import { DeterministicSensorSynthesizer } from "./sensors";
 import type { Clock, ExecutionMetrics, UPOConfig } from "./types";
 
@@ -18,7 +19,12 @@ export type RunParams = {
   enableInertiaInversion: boolean;
   inversionCompetes?: boolean;
   noiseScale?: number;
-  actionMinMargin?: number;
+  actionMinMargin?: number | null;
+  actionMarginQuantile?: number;
+  groundTruthMode?: GroundTruthMode;
+  scenario?: Scenario;
+  /** When set, and clock is omitted, the run uses this logical UTC origin. */
+  logicalOrigin?: string;
   maxLogSize?: number;
   clock?: Clock;
 };
@@ -33,6 +39,7 @@ export const DEFAULT_RUN: RunParams = {
   seed: 42,
   numAgents: 20,
   enableInertiaInversion: true,
+  groundTruthMode: "uniform",
   maxLogSize: 1000,
 };
 
@@ -46,7 +53,7 @@ export type SingleRun = {
   orthogonality: { min: number; max: number; mean: number };
 };
 
-function configFromParams(params: RunParams): UPOConfig {
+function configFromParams(params: RunParams, groundTruth?: readonly number[]): UPOConfig {
   const input: UPOConfigInput = {
     seed: params.seed,
     dampingFactor: params.dampingFactor,
@@ -56,18 +63,32 @@ function configFromParams(params: RunParams): UPOConfig {
     enableInertiaInversion: params.enableInertiaInversion,
     inversionCompetes: params.inversionCompetes,
     noiseScale: params.noiseScale,
-    actionMinMargin: params.actionMinMargin,
+    actionMinMargin: params.actionMinMargin === undefined ? null : params.actionMinMargin,
+    actionMarginQuantile: params.actionMarginQuantile,
     maxLogSize: params.maxLogSize ?? 1000,
+    groundTruth,
     debug: false,
   };
   return createUPOConfig(input);
 }
 
+function openAdapter(params: RunParams): SensorySemanticAdapter {
+  return new SensorySemanticAdapter(
+    512,
+    params.seed,
+    params.actionMinMargin === undefined ? null : params.actionMinMargin,
+    params.actionMarginQuantile,
+  );
+}
+
 export function executeSingle(params: RunParams): SingleRun {
-  const config = configFromParams(params);
-  const clock = params.clock ?? utcNow;
+  const adapter = openAdapter(params);
+  const mode = params.groundTruthMode ?? "uniform";
+  const scenario = params.scenario ?? CALM;
+  const groundTruth = mode === "calm" ? groundTruthFromScenario(adapter, scenario) : undefined;
+  const config = configFromParams(params, groundTruth);
+  const clock = params.clock ?? (params.logicalOrigin ? logicalClock(params.logicalOrigin) : utcNow);
   const upo = new UnifiedProcessOntology(config, clock);
-  const adapter = new SensorySemanticAdapter(config.latentDim, config.seed, config.actionMinMargin);
   const raw = DeterministicSensorSynthesizer.synthesize(params.envStress, params.noiseLevel, params.seed);
   const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
   const metrics = upo.perceiveAndExecuteDetailed(inputs, params.internalStress, params.envStress, adapter);
@@ -99,13 +120,52 @@ export type StressRecord = {
   degenerate: boolean;
   internalStress: number;
   chainIntact: boolean;
+  toleranceCritical: number;
+  toleranceHeadroom: number;
+  swarmDiversity: number;
+  meanSphere: number;
 };
 
+/** Mean sphere distance of agents the referee is allowed to pick. The probe is excluded unless it competes. */
+function eligibleSphereMean(
+  distances: readonly number[],
+  probe: readonly boolean[],
+  inversionCompetes: boolean,
+): number {
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < distances.length; i++) {
+    if (!inversionCompetes && probe[i]) continue;
+    sum += distances[i];
+    n += 1;
+  }
+  return n === 0 ? 0 : sum / n;
+}
+
 /** Master protocol: noise 0.10→4.02, env 0.20→1.50, 50 iterations, one ontology. */
-export function run50IterationStressTest(seed = 42): { records: StressRecord[]; chainIntact: boolean } {
-  const cfg = createUPOConfig({ seed, tolerance: 0.25, debug: false });
+export function run50IterationStressTest(
+  seed = 42,
+  groundTruthMode: GroundTruthMode = "uniform",
+): { records: StressRecord[]; chainIntact: boolean } {
+  const params: RunParams = {
+    ...DEFAULT_RUN,
+    seed,
+    tolerance: 0.25,
+    groundTruthMode,
+    envStress: 0.2,
+    noiseLevel: 0.1,
+    internalStress: 0,
+  };
+  const adapter = openAdapter(params);
+  const groundTruth = groundTruthMode === "calm" ? groundTruthFromScenario(adapter, CALM) : undefined;
+  const cfg = createUPOConfig({
+    seed,
+    tolerance: 0.25,
+    debug: false,
+    groundTruth,
+    actionMinMargin: null,
+  });
   const upo = new UnifiedProcessOntology(cfg, logicalClock("2026-06-01T00:00:00.000Z"));
-  const adapter = new SensorySemanticAdapter(cfg.latentDim, seed, cfg.actionMinMargin);
   const records: StressRecord[] = [];
 
   for (let it = 0; it < 50; it++) {
@@ -132,6 +192,10 @@ export function run50IterationStressTest(seed = 42): { records: StressRecord[]; 
       degenerate: m.degenerate,
       internalStress: internal,
       chainIntact: upo.manifold.verifyChainIntegrity(),
+      toleranceCritical: m.toleranceCritical,
+      toleranceHeadroom: m.toleranceHeadroom,
+      swarmDiversity: m.swarmDiversity,
+      meanSphere: eligibleSphereMean(m.sphereDistances, m.inversionProbe, cfg.inversionCompetes),
     });
   }
   return { records, chainIntact: upo.manifold.verifyChainIntegrity() };
@@ -231,6 +295,9 @@ export function stressCsv(records: readonly StressRecord[], headerLine?: string)
     "Decoded_Action",
     "Margin",
     "Degenerate",
+    "TolCrit",
+    "Headroom",
+    "SwarmDiversity",
   ];
   const lines = [header.join(",")];
   for (const r of records) {
@@ -250,6 +317,9 @@ export function stressCsv(records: readonly StressRecord[], headerLine?: string)
       r.decodedAction,
       r.actionMargin.toFixed(6),
       r.degenerate,
+      r.toleranceCritical.toFixed(6),
+      r.toleranceHeadroom.toFixed(6),
+      r.swarmDiversity.toFixed(6),
     ].join(","));
   }
   return lines.join("\n") + "\n";
@@ -321,49 +391,121 @@ export function runJson(run: SingleRun): string {
         actionCosineSimilarity: m.actionCosineSimilarity,
         actionMargin: m.actionMargin,
         actionRunnerUp: m.actionRunnerUp,
+        actionMinMargin: m.actionMinMargin,
+        actionMarginQuantile: m.actionMarginQuantile,
+        actionNullRate: m.actionNullRate,
+        toleranceCritical: m.toleranceCritical,
+        toleranceHeadroom: m.toleranceHeadroom,
+        swarmDiversity: m.swarmDiversity,
         confidence: m.finalState.confidence,
         lineage: m.finalState.lineage,
         finalVector: m.finalState.vector,
       },
+      groundTruthMode: run.params.groundTruthMode ?? "uniform",
+      scenario: (run.params.groundTruthMode ?? "uniform") === "calm" ? (run.params.scenario ?? CALM) : null,
+      headHash: run.log.length === 0 ? "" : entryHash(run.log[run.log.length - 1]),
     },
     null,
     2,
   );
 }
 
+const MAX_JSON_BYTES = 1_000_000;
+const PARAM_KEYS = [
+  "envStress",
+  "internalStress",
+  "noiseLevel",
+  "dampingFactor",
+  "tolerance",
+  "stressIncrement",
+  "seed",
+  "numAgents",
+  "enableInertiaInversion",
+  "inversionCompetes",
+  "noiseScale",
+  "actionMinMargin",
+  "actionMarginQuantile",
+  "groundTruthMode",
+  "maxLogSize",
+  "logicalOrigin",
+] as const;
+
 export function reproduceExportedRun(json: string): { ok: boolean; detail: string } {
-  const parsed = JSON.parse(json) as {
-    schemaVersion?: string;
-    params: RunParams;
-    metrics: {
-      winnerIndex: number;
-      degenerate: boolean;
-      decodedAction: string;
-      actionMargin: number;
-      distPostCollapse: number;
-      postConfidences: number[];
-      tieCount: number;
-    };
-  };
-  if (parsed.schemaVersion !== EXPORT_SCHEMA) {
-    return { ok: false, detail: `schema ${parsed.schemaVersion ?? "missing"}` };
+  if (typeof json !== "string") return { ok: false, detail: "invalid json" };
+  if (json.length > MAX_JSON_BYTES) return { ok: false, detail: "too large" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { ok: false, detail: "invalid json" };
   }
-  const again = executeSingle({ ...parsed.params, clock: logicalClock("2026-05-01T00:00:00.000Z") });
-  const m = again.metrics;
-  const p = parsed.metrics;
-  const confOk = m.postConfidences.every((c, i) => Math.abs(c - p.postConfidences[i]) < 1e-9);
-  const ok =
-    m.winnerIndex === p.winnerIndex &&
-    m.degenerate === p.degenerate &&
-    m.decodedAction === p.decodedAction &&
-    m.tieCount === p.tieCount &&
-    Math.abs(m.actionMargin - p.actionMargin) < 1e-9 &&
-    Math.abs(m.distPostCollapse - p.distPostCollapse) < 1e-9 &&
-    confOk;
-  return {
-    ok,
-    detail: ok
-      ? "match"
-      : `winner ${p.winnerIndex}->${m.winnerIndex} action ${p.decodedAction}->${m.decodedAction} deg ${p.degenerate}->${m.degenerate}`,
-  };
+  try {
+    if (!parsed || typeof parsed !== "object") return { ok: false, detail: "schema violation" };
+    const body = parsed as {
+      schemaVersion?: unknown;
+      headHash?: unknown;
+      params?: unknown;
+      metrics?: unknown;
+    };
+    if (body.schemaVersion !== EXPORT_SCHEMA) {
+      return { ok: false, detail: `schema ${typeof body.schemaVersion === "string" ? body.schemaVersion : "missing"}` };
+    }
+    if (!body.metrics || typeof body.metrics !== "object" || !body.params || typeof body.params !== "object") {
+      return { ok: false, detail: "schema violation" };
+    }
+    const rawParams = body.params as Record<string, unknown>;
+    const metrics = body.metrics as Record<string, unknown>;
+    const numAgents = rawParams.numAgents;
+    if (typeof numAgents !== "number" || !Number.isInteger(numAgents)) {
+      return { ok: false, detail: "schema violation" };
+    }
+    if (!Array.isArray(metrics.postConfidences) || metrics.postConfidences.length !== numAgents) {
+      return { ok: false, detail: "schema violation" };
+    }
+    const picked: Record<string, unknown> = {};
+    for (const key of PARAM_KEYS) {
+      if (rawParams[key] !== undefined) picked[key] = rawParams[key];
+    }
+    const params = { ...DEFAULT_RUN, ...picked } as RunParams;
+    if (rawParams.scenario && typeof rawParams.scenario === "object") {
+      params.scenario = rawParams.scenario as Scenario;
+    }
+    if (params.groundTruthMode !== "uniform" && params.groundTruthMode !== "calm") {
+      return { ok: false, detail: "schema violation" };
+    }
+    const origin = typeof params.logicalOrigin === "string" ? params.logicalOrigin : null;
+    const again = executeSingle({
+      ...params,
+      clock: logicalClock(origin ?? "2026-05-01T00:00:00.000Z"),
+    });
+    const m = again.metrics;
+    const post = metrics.postConfidences as unknown[];
+    const confOk = m.postConfidences.every((c, i) => typeof post[i] === "number" && Math.abs(c - (post[i] as number)) < 1e-9);
+    const num = (key: string) => metrics[key];
+    const sameNum = (key: string, value: number) => typeof num(key) === "number" && Math.abs(value - (num(key) as number)) < 1e-9;
+    let ok =
+      m.winnerIndex === metrics.winnerIndex &&
+      m.degenerate === metrics.degenerate &&
+      m.decodedAction === metrics.decodedAction &&
+      m.tieCount === metrics.tieCount &&
+      sameNum("actionMargin", m.actionMargin) &&
+      sameNum("distPostCollapse", m.distPostCollapse) &&
+      confOk;
+    let hashOk = true;
+    if (origin) {
+      const againHash = again.log.length === 0 ? "" : entryHash(again.log[again.log.length - 1]);
+      hashOk = againHash === body.headHash;
+    }
+    const matched = ok && hashOk;
+    return {
+      ok: matched,
+      detail: matched
+        ? "match"
+        : !hashOk
+          ? "head hash"
+          : `winner ${String(metrics.winnerIndex)}->${m.winnerIndex} action ${String(metrics.decodedAction)}->${m.decodedAction} deg ${String(metrics.degenerate)}->${m.degenerate}`,
+    };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : "schema violation" };
+  }
 }

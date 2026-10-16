@@ -26,8 +26,10 @@ export type UPOConfig = {
   inversionCompetes: boolean;
   /** Multiplier on dimension-scaled swarm noise. Correction C10. Default 1. */
   noiseScale: number;
-  /** Minimum cosine gap required to name an action. Correction C11. */
-  actionMinMargin: number;
+  /** Minimum cosine gap required to name an action. Null means the adapter calibrates it. Correction C16. */
+  actionMinMargin: number | null;
+  /** Quantile of the null margin used when actionMinMargin is null. Correction C16. */
+  actionMarginQuantile: number;
   debug: boolean;
 };
 
@@ -77,10 +79,21 @@ export type ExecutionMetrics = {
   degenerate: boolean;
   /** Eligible agents sharing the winning confidence and sphere distance. */
   tieCount: number;
+  /** Tolerance at which every eligible confidence becomes 0. Correction C15. */
+  toleranceCritical: number;
+  /** toleranceCritical minus the configured tolerance. Negative means already degenerate. */
+  toleranceHeadroom: number;
+  /** 1 minus the mean pairwise cosine of non-probe agents. Correction C18. */
+  swarmDiversity: number;
   decodedAction: string;
   actionCosineSimilarity: number;
   actionMargin: number;
   actionRunnerUp: string;
+  /** Threshold actually used by the decoder. Resolved even when config stores null. */
+  actionMinMargin: number;
+  actionMarginQuantile: number;
+  /** Share of the calibration sample whose margin is at least the threshold. */
+  actionNullRate: number;
 };
 
 export type Clock = () => string;

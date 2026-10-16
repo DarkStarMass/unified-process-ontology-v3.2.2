@@ -6,6 +6,31 @@ export class ContextRevisor {
   readonly baseWeights: Record<string, number> = { ...MODALITY_PRIORS };
 }
 
+export function fuseModalities(
+  inputs: Record<string, ModalChannel>,
+  priors: Record<string, number>,
+): { vector: number[]; weights: Record<string, number> } {
+  const ordered = Object.keys(inputs);
+  if (ordered.length === 0) throw new Error("Sensory Triage: empty inputs");
+  const scores = ordered.map((k) => {
+    const prior = priors[k] ?? 1;
+    return prior * Math.log1p(inputs[k].energy);
+  });
+  const sm = softmax(scores);
+  const weights: Record<string, number> = {};
+  ordered.forEach((k, i) => {
+    weights[k] = sm[i];
+  });
+  const dim = inputs[ordered[0]].vector.length;
+  const vector = new Array<number>(dim).fill(0);
+  for (let i = 0; i < dim; i++) {
+    let s = 0;
+    for (const k of ordered) s += weights[k] * inputs[k].vector[i];
+    vector[i] = s;
+  }
+  return { vector, weights };
+}
+
 export class SensoryTriageAgent {
   constructor(
     readonly revisor: ContextRevisor,
@@ -41,24 +66,10 @@ export class SensoryTriageAgent {
     }
 
     const ordered = [...channels.keys()];
-    const scores = ordered.map((k) => {
-      const prior = this.revisor.baseWeights[k] ?? 1;
-      return prior * Math.log1p(channels.get(k)!.energy);
-    });
-    const sm = softmax(scores);
-    const weights: Record<string, number> = {};
-    ordered.forEach((k, i) => {
-      weights[k] = sm[i];
-    });
-
-    const dim = channels.get(ordered[0])!.vector.length;
-    const merged = new Array<number>(dim).fill(0);
-    for (let i = 0; i < dim; i++) {
-      let s = 0;
-      for (const k of ordered) s += weights[k] * channels.get(k)!.vector[i];
-      merged[i] = s;
-    }
-    const lineage = this.manifold.appendTransition(LayerType.SALIENCE.toUpperCase(), "triage", merged);
-    return { state: { vector: merged, lineage, confidence: 1 }, weights };
+    const plain: Record<string, ModalChannel> = {};
+    for (const key of ordered) plain[key] = channels.get(key)!;
+    const fused = fuseModalities(plain, this.revisor.baseWeights);
+    const lineage = this.manifold.appendTransition(LayerType.SALIENCE.toUpperCase(), "triage", fused.vector);
+    return { state: { vector: fused.vector, lineage, confidence: 1 }, weights: fused.weights };
   }
 }

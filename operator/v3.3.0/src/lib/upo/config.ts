@@ -16,7 +16,8 @@ export type UPOConfigInput = {
   enableInertiaInversion?: boolean;
   inversionCompetes?: boolean;
   noiseScale?: number;
-  actionMinMargin?: number;
+  actionMinMargin?: number | null;
+  actionMarginQuantile?: number;
   debug?: boolean;
 };
 
@@ -80,7 +81,8 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
   const enableInertiaInversion = input.enableInertiaInversion ?? true;
   const inversionCompetes = input.inversionCompetes ?? false;
   const noiseScale = input.noiseScale ?? 1;
-  const actionMinMargin = input.actionMinMargin ?? 0.05;
+  const actionMinMargin = input.actionMinMargin === undefined ? null : input.actionMinMargin;
+  const actionMarginQuantile = input.actionMarginQuantile ?? 0.99;
   if (typeof inversionCompetes !== "boolean") {
     throw new Error("UPOConfig: inversionCompetes must be a boolean.");
   }
@@ -91,8 +93,14 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
   }
   finite("noiseScale", noiseScale);
   if (noiseScale < 0) throw new Error("UPOConfig: noiseScale must be non-negative.");
-  finite("actionMinMargin", actionMinMargin);
-  if (actionMinMargin < 0) throw new Error("UPOConfig: actionMinMargin must be non-negative.");
+  if (actionMinMargin !== null) {
+    finite("actionMinMargin", actionMinMargin);
+    if (actionMinMargin < 0) throw new Error("UPOConfig: actionMinMargin must be non-negative.");
+  }
+  finite("actionMarginQuantile", actionMarginQuantile);
+  if (!(actionMarginQuantile > 0 && actionMarginQuantile <= 1)) {
+    throw new Error("UPOConfig: actionMarginQuantile must be in (0, 1].");
+  }
 
   return Object.freeze({
     numAgents,
@@ -110,6 +118,7 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
     inversionCompetes,
     noiseScale,
     actionMinMargin,
+    actionMarginQuantile,
     debug: input.debug ?? false,
   });
 }

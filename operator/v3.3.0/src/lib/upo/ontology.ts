@@ -3,7 +3,7 @@ import { euclidean, l2 } from "./math";
 import { MemoryManifold, utcNow } from "./manifold";
 import { HostileReferees } from "./referees";
 import { DynamicStressRegulator } from "./regulator";
-import { ParasympatheticSwarm } from "./swarm";
+import { ParasympatheticSwarm, swarmDiversity } from "./swarm";
 import { ContextRevisor, SensoryTriageAgent } from "./triage";
 import {
   LayerType,
@@ -87,6 +87,14 @@ export class UnifiedProcessOntology {
     const winnerIndex = picked.index;
     const winner = critiqued[winnerIndex];
     const distPre = distances[winnerIndex];
+    let toleranceCritical = 0;
+    for (let i = 0; i < preConfs.length; i++) {
+      if (!this.config.inversionCompetes && swarm.paths[i].isInversionProbe) continue;
+      const ratio = preConfs[i] / Math.max(sphereDistances[i], 1e-12);
+      if (ratio > toleranceCritical) toleranceCritical = ratio;
+    }
+    const toleranceHeadroom = toleranceCritical - this.config.tolerance;
+    const inversionProbe = swarm.paths.map((p) => p.isInversionProbe === true);
 
     const lineage = this.manifold.appendTransition(
       LayerType.REFLECTION.toUpperCase(),
@@ -125,13 +133,22 @@ export class UnifiedProcessOntology {
       sphereDistances,
       dampedFlags: swarm.dampedFlags,
       agentStress: swarm.agentStress,
-      inversionProbe: swarm.paths.map((p) => p.isInversionProbe === true),
+      inversionProbe,
       degenerate: picked.degenerate,
       tieCount: picked.tieCount,
+      toleranceCritical,
+      toleranceHeadroom,
+      swarmDiversity: swarmDiversity(
+        swarm.paths.map((p) => p.vector),
+        inversionProbe,
+      ),
       decodedAction,
       actionCosineSimilarity: actionCosine,
       actionMargin,
       actionRunnerUp,
+      actionMinMargin: adapter?.minMargin ?? 0,
+      actionMarginQuantile: adapter?.marginQuantile ?? 0,
+      actionNullRate: adapter?.nullRate ?? 0,
     };
   }
 
