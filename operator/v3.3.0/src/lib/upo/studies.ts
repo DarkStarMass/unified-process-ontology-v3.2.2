@@ -3,7 +3,7 @@ import { KERNEL_NOTES, KERNEL_VERSION } from "./assumptions";
 import { createUPOConfig, type UPOConfigInput } from "./config";
 import { entryHash, logicalClock, utcNow } from "./manifold";
 import { UnifiedProcessOntology } from "./ontology";
-import { CALM, groundTruthFromScenario, type GroundTruthMode, type Scenario } from "./scenario";
+import { CALM, ACTION_BINDINGS, groundTruthFromScenario, type GroundTruthMode, type Scenario } from "./scenario";
 import { DeterministicSensorSynthesizer } from "./sensors";
 import type { Clock, ExecutionMetrics, UPOConfig } from "./types";
 
@@ -23,6 +23,8 @@ export type RunParams = {
   actionMarginQuantile?: number;
   groundTruthMode?: GroundTruthMode;
   scenario?: Scenario;
+  /** Fourth modality from residual spread. Default off, so C19 winners stay put. Correction C21. */
+  qualityChannel?: boolean;
   /** When set, and clock is omitted, the run uses this logical UTC origin. */
   logicalOrigin?: string;
   maxLogSize?: number;
@@ -51,6 +53,8 @@ export type SingleRun = {
   logSize: number;
   log: ReturnType<UnifiedProcessOntology["manifold"]["entries"]>;
   orthogonality: { min: number; max: number; mean: number };
+  /** utc when the run stamps with the wall clock, logical when a clock was injected or an origin was named. */
+  clockMode: "utc" | "logical";
 };
 
 function configFromParams(params: RunParams, groundTruth?: readonly number[]): UPOConfig {
@@ -78,6 +82,7 @@ function openAdapter(params: RunParams): SensorySemanticAdapter {
     params.seed,
     params.actionMinMargin === undefined ? null : params.actionMinMargin,
     params.actionMarginQuantile,
+    params.qualityChannel === true,
   );
 }
 
@@ -88,6 +93,7 @@ export function executeSingle(params: RunParams): SingleRun {
   const groundTruth = mode === "calm" ? groundTruthFromScenario(adapter, scenario) : undefined;
   const config = configFromParams(params, groundTruth);
   const clock = params.clock ?? (params.logicalOrigin ? logicalClock(params.logicalOrigin) : utcNow);
+  const clockMode = params.clock || typeof params.logicalOrigin === "string" ? "logical" : "utc";
   const upo = new UnifiedProcessOntology(config, clock);
   const raw = DeterministicSensorSynthesizer.synthesize(params.envStress, params.noiseLevel, params.seed);
   const inputs = adapter.ingest(raw.visual, raw.auditory, raw.imu);
@@ -100,6 +106,7 @@ export function executeSingle(params: RunParams): SingleRun {
     logSize: upo.manifold.size,
     log: upo.manifold.entries(),
     orthogonality: adapter.computeOrthogonalityStats(),
+    clockMode,
   };
 }
 
@@ -276,30 +283,34 @@ export function runDampingStudy(base: RunParams = DEFAULT_RUN): DampingRow[] {
   return rows;
 }
 
-export function stressCsv(records: readonly StressRecord[], headerLine?: string): string {
-  const header = headerLine
-    ? headerLine.split(",")
-    : [
-    "Iteration",
-    "Noise_Level",
-    "Simulated_Environment_Stress",
-    "Internal_Stress",
-    "Active_Threshold",
-    "Swarm_Panic_Interventions",
-    "Winner_Agent",
-    "Dist_Pre_Collapse",
-    "Dist_Post_Collapse",
-    "Stability_Proxy",
-    "Winner_Pre_Confidence",
-    "System_Confidence_Post_Referee",
-    "Decoded_Action",
-    "Margin",
-    "Degenerate",
-    "TolCrit",
-    "Headroom",
-    "SwarmDiversity",
-  ];
-  const lines = [header.join(",")];
+const STRESS_HEADER = [
+  "iteration",
+  "noiseLevel",
+  "simulatedEnvironmentStress",
+  "internalStress",
+  "activeThreshold",
+  "swarmPanicInterventions",
+  "winnerIndex",
+  "distPreCollapse",
+  "distPostCollapse",
+  "stabilityProxy",
+  "winnerPreConfidence",
+  "systemConfidencePostReferee",
+  "decodedAction",
+  "actionMargin",
+  "degenerate",
+  "toleranceCritical",
+  "toleranceHeadroom",
+  "swarmDiversity",
+  "Modus",
+  "Aktion_gebunden",
+] as const;
+
+const BOUND_ACTION_NAMES = new Set<string>(ACTION_BINDINGS.map((binding) => binding.action));
+
+/** Canonical stress table. Field winnerIndex matches the JSON metrics name. */
+export function stressCsv(records: readonly StressRecord[], mode: GroundTruthMode = "uniform"): string {
+  const lines = [STRESS_HEADER.join(",")];
   for (const r of records) {
     lines.push([
       r.iteration,
@@ -320,9 +331,15 @@ export function stressCsv(records: readonly StressRecord[], headerLine?: string)
       r.toleranceCritical.toFixed(6),
       r.toleranceHeadroom.toFixed(6),
       r.swarmDiversity.toFixed(6),
+      mode,
+      BOUND_ACTION_NAMES.has(r.decodedAction),
     ].join(","));
   }
   return lines.join("\n") + "\n";
+}
+
+export function stressCsvName(mode: GroundTruthMode): string {
+  return mode === "calm" ? "upo-stress-50-calm.csv" : "upo-stress-50.csv";
 }
 
 export function agentCsv(run: SingleRun, headerLine = "Agent,Damped,Stress,d_pre,d_sphere,Pre_Conf,Post_Conf,Probe,Winner"): string {
@@ -344,7 +361,8 @@ export function agentCsv(run: SingleRun, headerLine = "Agent,Damped,Stress,d_pre
   return lines.join("\n") + "\n";
 }
 
-export const EXPORT_SCHEMA = "upo-run-1";
+export const EXPORT_SCHEMA = "upo-run-2";
+export const EXPORT_SCHEMA_V1 = "upo-run-1";
 export const RNG_ID = "xoshiro128**/SplitMix32";
 
 export function runJson(run: SingleRun): string {
@@ -352,6 +370,7 @@ export function runJson(run: SingleRun): string {
   return JSON.stringify(
     {
       schemaVersion: EXPORT_SCHEMA,
+      clockMode: run.clockMode,
       kernelVersion: KERNEL_VERSION,
       notes: KERNEL_NOTES.map((note) => note.id),
       rng: RNG_ID,
@@ -426,6 +445,7 @@ const PARAM_KEYS = [
   "actionMinMargin",
   "actionMarginQuantile",
   "groundTruthMode",
+  "qualityChannel",
   "maxLogSize",
   "logicalOrigin",
 ] as const;
@@ -447,10 +467,17 @@ export function reproduceExportedRun(json: string): { ok: boolean; detail: strin
       params?: unknown;
       metrics?: unknown;
     };
-    if (body.schemaVersion !== EXPORT_SCHEMA) {
+    if (body.schemaVersion !== EXPORT_SCHEMA && body.schemaVersion !== EXPORT_SCHEMA_V1) {
       return { ok: false, detail: `schema ${typeof body.schemaVersion === "string" ? body.schemaVersion : "missing"}` };
     }
+    if (body.schemaVersion === EXPORT_SCHEMA) {
+      const clockMode = (body as { clockMode?: unknown }).clockMode;
+      if (clockMode !== "utc" && clockMode !== "logical") return { ok: false, detail: "schema violation" };
+    }
     if (!body.metrics || typeof body.metrics !== "object" || !body.params || typeof body.params !== "object") {
+      return { ok: false, detail: "schema violation" };
+    }
+    if (body.schemaVersion === EXPORT_SCHEMA && typeof (body.metrics as { winnerIndex?: unknown }).winnerIndex !== "number") {
       return { ok: false, detail: "schema violation" };
     }
     const rawParams = body.params as Record<string, unknown>;
@@ -471,6 +498,9 @@ export function reproduceExportedRun(json: string): { ok: boolean; detail: strin
       params.scenario = rawParams.scenario as Scenario;
     }
     if (params.groundTruthMode !== "uniform" && params.groundTruthMode !== "calm") {
+      return { ok: false, detail: "schema violation" };
+    }
+    if (picked.qualityChannel !== undefined && typeof picked.qualityChannel !== "boolean") {
       return { ok: false, detail: "schema violation" };
     }
     const origin = typeof params.logicalOrigin === "string" ? params.logicalOrigin : null;

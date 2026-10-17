@@ -1,6 +1,7 @@
 import { dot, l2 } from "./math";
 import { STREAM_ADAPTER, STREAM_CALIB, SeededRng, streamSeed } from "./rng";
-import { compensateGravity } from "./sensors";
+import { ACTION_BINDINGS, groundTruthFromScenario } from "./scenario";
+import { compensateGravity, residualStd } from "./sensors";
 import { ACTION_NAMES, type ActionName, type ModalChannel } from "./types";
 
 export const DEFAULT_ACTION_MIN_MARGIN = 0.05;
@@ -13,7 +14,8 @@ export type DecodeResult = {
   action: ActionName | "UNDECIDED";
   cosine: number;
   margin: number;
-  runnerUp: ActionName;
+  runnerUp: ActionName | "";
+  bound: boolean;
 };
 
 function matVec(w: Float64Array, x: ArrayLike<number>, rows: number, cols: number): Float64Array {
@@ -38,7 +40,8 @@ function asUnitChannel(projected: Float64Array): ModalChannel {
 
 /**
  * Projects 16D vision, 8D audio and 6D IMU onto S^(d-1)
- * and decodes a state by cosine against 9 fast-orthogonal action vectors.
+ * and decodes a state by cosine against scenario prototypes.
+ * Correction C20: only ACTION_BINDINGS take part. The other names are unbound.
  * Biases b_* are the zero vector specified in the master, so Wx+b = Wx.
  */
 export class SensorySemanticAdapter {
@@ -46,7 +49,11 @@ export class SensorySemanticAdapter {
   private readonly wVisual: Float64Array;
   private readonly wAuditory: Float64Array;
   private readonly wHaptic: Float64Array;
+  private readonly wQuality: Float64Array;
   readonly actionSpace: Record<ActionName, Float64Array>;
+  readonly boundActions: readonly ActionName[];
+  readonly unboundActions: readonly ActionName[];
+  readonly qualityChannel: boolean;
   readonly minMargin: number;
   readonly marginQuantile: number;
   readonly nullRate: number;
@@ -56,6 +63,7 @@ export class SensorySemanticAdapter {
     readonly seed: number,
     minMargin: number | null = null,
     marginQuantile = DEFAULT_MARGIN_QUANTILE,
+    qualityChannel = false,
   ) {
     if (!Number.isInteger(targetDim) || targetDim <= 0) {
       throw new Error("Adapter targetDim must be a positive integer.");
@@ -71,8 +79,29 @@ export class SensorySemanticAdapter {
     this.wVisual = this.fillNormal(rng, targetDim * 16, 0.1);
     this.wAuditory = this.fillNormal(rng, targetDim * 8, 0.1);
     this.wHaptic = this.fillNormal(rng, targetDim * 6, 0.1);
+    this.qualityChannel = qualityChannel;
+    this.wQuality = qualityChannel ? this.fillNormal(rng, targetDim * 3, 0.1) : new Float64Array(0);
+    const seen = new Set<ActionName>();
+    const bound: ActionName[] = [];
     const space = {} as Record<ActionName, Float64Array>;
-    for (const name of ACTION_NAMES) space[name] = this.unitGaussian(rng);
+    for (const binding of ACTION_BINDINGS) {
+      if (seen.has(binding.action)) {
+        throw new Error(`Adapter: duplicate binding ${binding.action}`);
+      }
+      seen.add(binding.action);
+      bound.push(binding.action);
+      const proto = groundTruthFromScenario(this, binding.scenario);
+      if (proto.length !== targetDim) {
+        throw new Error(`Adapter: prototype dim ${proto.length} != ${targetDim}`);
+      }
+      space[binding.action] = Float64Array.from(proto);
+    }
+    if (bound.length < 2) throw new Error("Adapter: at least two bound actions are required.");
+    for (const name of ACTION_NAMES) {
+      if (!seen.has(name)) space[name] = new Float64Array(targetDim);
+    }
+    this.boundActions = bound;
+    this.unboundActions = ACTION_NAMES.filter((name) => !seen.has(name));
     this.actionSpace = space;
     const calibrated = this.calibrateNullMargin(marginQuantile, DEFAULT_MARGIN_SAMPLE);
     this.minMargin = minMargin === null ? calibrated.threshold : minMargin;
@@ -96,14 +125,14 @@ export class SensorySemanticAdapter {
     return v;
   }
 
-  /** Cosine gap of a state against the nine action vectors. Independent of the threshold. */
+  /** Cosine gap of a state against the bound prototypes only. Independent of the threshold. */
   marginOf(stateVector: ArrayLike<number>): number {
     if (stateVector.length !== this.targetDim) {
       throw new Error(`marginOf: state dim ${stateVector.length} != ${this.targetDim}`);
     }
     let best = -Infinity;
     let runner = -Infinity;
-    for (const name of ACTION_NAMES) {
+    for (const name of this.boundActions) {
       const c = dot(stateVector, this.actionSpace[name]);
       if (c > best) {
         runner = best;
@@ -125,7 +154,7 @@ export class SensorySemanticAdapter {
     sample: number[];
   } {
     if (!Number.isInteger(n) || n < 2) throw new Error("calibrateNullMargin: n must be an integer >= 2.");
-    const key = `${this.seed}|${this.targetDim}|${quantile}|${n}`;
+    const key = `${this.seed}|${this.targetDim}|${quantile}|${n}|${this.boundActions.join(",")}|q${this.qualityChannel ? 1 : 0}`;
     const cached = marginCache.get(key);
     if (cached) return cached;
     const rng = new SeededRng(streamSeed(this.seed, STREAM_CALIB));
@@ -167,23 +196,38 @@ export class SensorySemanticAdapter {
     return asUnitChannel(matVec(this.wHaptic, deviation, this.targetDim, 6));
   }
 
+  /**
+   * Fourth modality. Three residual-std features, own weights, prior 0.6 in the triage.
+   * Drawn only when the channel is on, and only after the three modality matrices,
+   * so a disabled channel leaves every embedding on the C19/C20 weights.
+   */
+  embedQuality(visual: ArrayLike<number>, auditory: ArrayLike<number>, imu: ArrayLike<number>): ModalChannel {
+    if (!this.qualityChannel) throw new Error("Quality channel is disabled.");
+    const features = [residualStd(visual), residualStd(auditory), residualStd(compensateGravity(imu))];
+    return asUnitChannel(matVec(this.wQuality, features, this.targetDim, 3));
+  }
+
   ingest(vis: ArrayLike<number>, aud: ArrayLike<number>, imu: ArrayLike<number>): Record<string, ModalChannel> {
-    return {
+    const channels: Record<string, ModalChannel> = {
       visual: this.embedVisual(vis),
       auditory: this.embedAuditory(aud),
       haptic: this.embedHaptic(imu),
     };
+    if (this.qualityChannel) channels.quality = this.embedQuality(vis, aud, imu);
+    return channels;
   }
 
   decodeDetailed(stateVector: ArrayLike<number>): DecodeResult {
     if (stateVector.length !== this.targetDim) {
       throw new Error(`decode: state dim ${stateVector.length} != ${this.targetDim}`);
     }
-    let bestName: ActionName = ACTION_NAMES[0];
-    let best = -Infinity;
-    let runnerUp: ActionName = ACTION_NAMES[1];
+    const names = this.boundActions;
+    let bestName = names[0];
+    let best = dot(stateVector, this.actionSpace[bestName]);
+    let runnerUp: ActionName | "" = "";
     let runner = -Infinity;
-    for (const name of ACTION_NAMES) {
+    for (let i = 1; i < names.length; i++) {
+      const name = names[i];
       const c = dot(stateVector, this.actionSpace[name]);
       if (c > best) {
         runner = best;
@@ -196,11 +240,13 @@ export class SensorySemanticAdapter {
       }
     }
     const margin = best - runner;
+    const named = margin >= this.minMargin;
     return {
-      action: margin >= this.minMargin ? bestName : "UNDECIDED",
+      action: named ? bestName : "UNDECIDED",
       cosine: best,
       margin,
       runnerUp,
+      bound: named,
     };
   }
 
@@ -209,7 +255,7 @@ export class SensorySemanticAdapter {
   }
 
   computeOrthogonalityStats(): { min: number; max: number; mean: number } {
-    const names = ACTION_NAMES;
+    const names = this.boundActions;
     const off: number[] = [];
     for (let i = 0; i < names.length; i++) {
       for (let j = i + 1; j < names.length; j++) {

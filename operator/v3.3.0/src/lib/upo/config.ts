@@ -1,4 +1,5 @@
 import { buildUnitGroundTruth, l2 } from "./math";
+import { ACTION_BINDINGS } from "./scenario";
 import type { UPOConfig } from "./types";
 
 export type UPOConfigInput = {
@@ -101,6 +102,7 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
   if (!(actionMarginQuantile > 0 && actionMarginQuantile <= 1)) {
     throw new Error("UPOConfig: actionMarginQuantile must be in (0, 1].");
   }
+  const boundActionCount = ACTION_BINDINGS.length;
 
   return Object.freeze({
     numAgents,
@@ -119,6 +121,7 @@ export function createUPOConfig(input: UPOConfigInput = {}): UPOConfig {
     noiseScale,
     actionMinMargin,
     actionMarginQuantile,
+    boundActionCount,
     debug: input.debug ?? false,
   });
 }

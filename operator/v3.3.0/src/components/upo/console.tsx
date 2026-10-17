@@ -17,13 +17,15 @@ import {
   runJson,
   runMultiSeed,
   stressCsv,
+  stressCsvName,
   type DampingRow,
   type MultiSeedRow,
   type RunParams,
   type SingleRun,
   type StressRecord,
 } from "@/lib/upo/studies";
-import type { ActionName } from "@/lib/upo/types";
+import { ACTION_BINDINGS, type GroundTruthMode } from "@/lib/upo/scenario";
+import { ACTION_NAMES, type ActionName } from "@/lib/upo/types";
 import { Button } from "@/components/ui/button";
 import { FieldSlider } from "@/components/ui/slider";
 import { FieldSwitch } from "@/components/ui/switch";
@@ -47,6 +49,8 @@ function download(filename: string, body: string, mime: string) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+const UNBOUND_ACTIONS = ACTION_NAMES.filter((name) => !ACTION_BINDINGS.some((binding) => binding.action === name));
 
 type Job = "run" | "diag" | "stress" | "seeds" | "grid" | "replay";
 
@@ -94,6 +98,7 @@ function sanitize(partial: Partial<Controls>, base: Controls): Controls {
         ? partial.enableInertiaInversion
         : base.enableInertiaInversion,
     groundTruthMode: partial.groundTruthMode === "calm" ? "calm" : "uniform",
+    qualityChannel: partial.qualityChannel === true,
     maxLogSize: base.maxLogSize,
   };
 }
@@ -125,6 +130,8 @@ export function UpoConsole() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [run, setRun] = useState<SingleRun | null>(null);
   const [stress, setStress] = useState<StressRecord[] | null>(null);
+  const [stressMode, setStressMode] = useState<GroundTruthMode>("uniform");
+  const [stressRanAs, setStressRanAs] = useState<GroundTruthMode>("uniform");
   const [seeds, setSeeds] = useState<MultiSeedRow[] | null>(null);
   const [grid, setGrid] = useState<DampingRow[] | null>(null);
   const [busy, setBusy] = useState<Job | null>(null);
@@ -268,8 +275,19 @@ export function UpoConsole() {
               checked={controls.groundTruthMode === "calm"}
               onChange={(on) => setControls((c) => ({ ...c, groundTruthMode: on ? "calm" : "uniform" }))}
             />
+            <FieldSwitch
+              label={t.quality}
+              checked={controls.qualityChannel === true}
+              onChange={(qualityChannel) => setControls((c) => ({ ...c, qualityChannel }))}
+            />
+            <FieldSwitch
+              label={t.stressGt}
+              checked={stressMode === "calm"}
+              onChange={(on) => setStressMode(on ? "calm" : "uniform")}
+            />
           </div>
           <p className="mt-2 max-w-3xl text-xs leading-normal text-muted">{t.gtNote}</p>
+          <p className="mt-1 max-w-3xl text-xs leading-normal text-muted">{t.qualityNote}</p>
           {run && run.metrics.toleranceCritical - controls.tolerance < 0.1 ? (
             <p className="mt-2 text-xs leading-normal text-danger" role="status">
               {fill(t.tolWarn, { crit: n(run.metrics.toleranceCritical, 2) })}
@@ -284,7 +302,7 @@ export function UpoConsole() {
               <ShieldCheck className="size-4" aria-hidden="true" />
               {busy === "diag" ? t.checking : t.checks}
             </Button>
-            <Button variant="secondary" disabled={busy !== null} onClick={() => void work("stress", () => setStress(run50IterationStressTest(controls.seed).records))}>
+            <Button variant="secondary" disabled={busy !== null} onClick={() => void work("stress", () => { setStress(run50IterationStressTest(controls.seed, stressMode).records); setStressRanAs(stressMode); })}>
               {busy === "stress" ? t.stressBusy : t.stress}
             </Button>
             <Button variant="secondary" disabled={busy !== null} onClick={() => void work("seeds", () => setSeeds(runMultiSeed(controls)))}>
@@ -304,7 +322,7 @@ export function UpoConsole() {
             <Button
               variant="secondary"
               disabled={busy !== null || !stress}
-              onClick={() => stress && download("upo-stress-50.csv", stressCsv(stress, t.csvStress), "text/csv")}
+              onClick={() => stress && download(stressCsvName(stressRanAs), stressCsv(stress, stressRanAs), "text/csv")}
             >
               {t.stressCsv}
             </Button>
@@ -368,6 +386,7 @@ export function UpoConsole() {
                   value={`${n(run.metrics.actionMinMargin, 4)}  q ${n(run.metrics.actionMarginQuantile, 2)}  p ${n(run.metrics.actionNullRate, 4)}`}
                 />
                 <p className="mb-2 text-xs leading-normal text-muted">{t.actionPlaceholder}</p>
+                <p className="mb-2 text-xs leading-normal text-muted">{t.unbound}: {UNBOUND_ACTIONS.join(", ")}</p>
                 <Metric label={t.lineage} value={run.metrics.finalState.lineage.slice(0, 16)} />
                 <Metric
                   label={t.ortho}
@@ -397,7 +416,8 @@ export function UpoConsole() {
                   ))}
                 </div>
                 <div className="mt-4 flex flex-col gap-2">
-                  {(["visual", "auditory", "haptic"] as const).map((key) => (
+                  {(["visual", "auditory", "haptic", "quality"] as const).map((key) =>
+                    key === "quality" && weights[key] === undefined ? null : (
                     <div key={key} className="grid grid-cols-[6.5rem_1fr_3.5rem] items-center gap-2 text-xs">
                       <span className="text-muted">{t.modality[key]}</span>
                       <span className="h-1.5 overflow-hidden rounded-full bg-input">
@@ -405,7 +425,8 @@ export function UpoConsole() {
                       </span>
                       <span className="text-right font-mono tabular-nums">{n(weights[key] ?? 0, 3)}</span>
                     </div>
-                  ))}
+                    ),
+                  )}
                 </div>
                 {(["visual", "auditory", "haptic"] as const).some((key) => (weights[key] ?? 0) > 0.95) ? (
                   <p className="mt-2 text-xs leading-normal text-muted">

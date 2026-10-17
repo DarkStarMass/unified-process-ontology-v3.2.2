@@ -21,6 +21,22 @@ export function compensateGravity(imuRaw: ArrayLike<number>): number[] {
 }
 
 /**
+ * Root-mean-square of second differences.
+ * Correction C21: a quality feature taken from the raw samples, not from the noise parameter.
+ * d[i] = x[i+2] − 2·x[i+1] + x[i].
+ */
+export function residualStd(x: ArrayLike<number>): number {
+  if (x.length < 3) throw new Error(`residualStd needs at least 3 samples, got ${x.length}.`);
+  const n = x.length - 2;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const d = x[i + 2] - 2 * x[i + 1] + x[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum / n);
+}
+
+/**
  * Deterministic raw sensors.
  * Vision 16D, audio 8D octave bands, IMU 6D [ax, ay, az, gx, gy, gz]
  * with gravity ax = 9.81 m/s^2. Noise is an independent argument (correction C2).

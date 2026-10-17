@@ -122,4 +122,19 @@ export const KERNEL_NOTES: readonly KernelNote[] = [
     kind: "correction",
     text: "reproduceExportedRun lehnt zu großes, unlesbares und schemafremdes JSON mit ok=false ab und wirft nicht. Es übernimmt nur bekannte Parameter. Der Head-Hash wird exportiert und beim Replay nur verglichen, wenn der Lauf eine logische Uhr mit genanntem Ursprung hatte. Die SHA-256-Kette ist ein Manipulationsnachweis nur zusammen mit einem außerhalb gespeicherten Head-Hash. Der Replay ist ein Determinismus-Test, kein Echtheitsbeweis.",
   },
+  {
+    id: "C20",
+    kind: "correction",
+    text: "Drei Aktionsnamen sind an die Triage-Richtung eines Referenzszenarios gebunden, am selben Adapter und ohne Schwarm: MOTOR_PROCEED_GENTLY bei Umgebung 0.2, PROMPT_LLM_CAUTION bei 0.8, MOTOR_STOP_IMMEDIATELY bei 1.4, jeweils Rauschen 1.0 und Sensor-Seed 0. Der interne Stress des Szenarios geht nicht in den Prototyp ein. Die übrigen sechs Namen sind ungebunden und nehmen am Decode nicht teil. Die Schwelle ist das 99. Perzentil der Marge über genau diese drei Prototypen. Die Belegung ist ein Platzhalter, keine gemessene Motorik. Messung, Raster 3 Umgebungen mal Rauschen 0.1/1.0/3.0 mal Seeds 42/101/2026/7777/99999 mal interner Stress 0 und 0.5: 90 von 90 Treffer, Marge 0.1296 bis 0.2329, Schwelle Seed 42 gleich 0.0711. Paarweiser Kosinus der Prototypen 0.325 bis 0.817. Gewinner und Konfidenzen des Standardlaufs und des Stresstests bleiben die von C19.",
+  },
+  {
+    id: "C21",
+    kind: "correction",
+    text: "Ein optionaler vierter Kanal quality hat Prior 0.6 und drei Merkmale auf 512 Dimensionen, eigene Gewichte, erst nach den drei Modalitätsmatrizen gezogen. Die Merkmale sind die Wurzel der mittleren quadratischen zweiten Differenz von Sehen (16), Hören (8) und der IMU nach Abzug der Gravitation. Die Energie geht als log1p in die Softmax. Der Kanal ist standardmäßig aus, damit Gewinner und Konfidenzen die von C19 bleiben. Messung Seed 42, Konsens-Kosinus zwischen Rauschen 0.1 und 3.0: aus 0.9803 / 0.9880 / 0.9874, an 0.9807 / 0.9865 / 0.9849 für Umgebung 0.2 / 0.8 / 1.4. Ziel unter 0.9 nicht erreicht. Neun-Szenarien-Raster, Annahme: Prototypen bei Sensor-Seed 0, Prüfung an Seeds 42 und 101, interner Stress 0 und 0.5, Endzustand gegen diese neun Prototypen, Schwelle das 99. Perzentil dieser neun: eingeschaltet 10 von 36 nächster Prototyp, 0 von 36 über der Schwelle 0.0102, Median der Marge 0.0028. Ziel 30 von 36 nicht erreicht. Im Standardlauf trägt der Kanal 0.1043 der Salienz. Die Richtung der drei Merkmale ändert sich kaum, Einbettungs-Kosinus 0.9954 / 0.9353 / 0.8934, weil die Sphäre den Skalenanteil verwirft. Der Kanal bleibt im Kern, aus. Das ist ein dokumentierter Fehlversuch, keine still entfernte Änderung.",
+  },
+  {
+    id: "C22",
+    kind: "correction",
+    text: "Das Exportschema ist upo-run-2. upo-run-1 bleibt im Replay lesbar. JSON trägt clockMode utc oder logical. Die Uhr ist logical, wenn ein Takt injiziert oder ein Ursprung genannt wurde, sonst utc. Der Head-Hash wird nur verglichen, wenn der Ursprung eine Zeichenkette ist. Die Stress-CSV benutzt dieselben Feldnamen wie der Code, insbesondere winnerIndex statt Winner_Agent, dazu Modus (uniform oder calm) und Aktion_gebunden. Der Dateiname ist upo-stress-50-calm.csv bei Ruhe-Referenz, sonst upo-stress-50.csv. Die Auswahl sitzt am Stresstest-Export. Der Standard bleibt uniform.",
+  },
 ];

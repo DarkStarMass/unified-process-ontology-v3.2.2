@@ -132,13 +132,16 @@ export function runAllChecks(): DiagnosticReport {
 
   try {
     const stats = adapter.computeOrthogonalityStats();
-    const ok = Math.abs(stats.mean) < 0.05 && stats.max < 0.25;
+    const bound = adapter.boundActions.length;
+    const ok = bound === 3 && stats.max < 0.95 && Number.isFinite(stats.min);
     checks.push(check(
       6,
       "Aktionsraum",
       ok,
-      `min=${stats.min.toFixed(3)} max=${stats.max.toFixed(3)} mean=${stats.mean.toFixed(4)}.`,
-      { min: stats.min.toFixed(3), max: stats.max.toFixed(3), mean: stats.mean.toFixed(4) },
+      ok
+        ? `gebunden=${bound}, cos min=${stats.min.toFixed(3)} max=${stats.max.toFixed(3)} mean=${stats.mean.toFixed(4)}.`
+        : `Aktionsraum nicht belegt: gebunden=${bound} max=${stats.max}`,
+      { min: stats.min.toFixed(3), max: stats.max.toFixed(3), mean: stats.mean.toFixed(4), bound },
     ));
   } catch (err) {
     checks.push(check(6, "Aktionsraum", false, err instanceof Error ? err.message : String(err)));

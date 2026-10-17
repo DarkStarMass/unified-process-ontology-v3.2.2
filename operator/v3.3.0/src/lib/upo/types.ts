@@ -30,6 +30,8 @@ export type UPOConfig = {
   actionMinMargin: number | null;
   /** Quantile of the null margin used when actionMinMargin is null. Correction C16. */
   actionMarginQuantile: number;
+  /** How many action names have a scenario prototype. Correction C20. The rest do not decode. */
+  boundActionCount: number;
   debug: boolean;
 };
 
@@ -116,6 +118,8 @@ export const MODALITY_PRIORS: Record<string, number> = {
   visual: 1.0,
   auditory: 0.8,
   haptic: 1.2,
+  /** Optional quality channel. Unused while that channel is absent from the fusion. Correction C21. */
+  quality: 0.6,
 };
 
 export const GENESIS_ANCHOR = "0x0_genesis";
